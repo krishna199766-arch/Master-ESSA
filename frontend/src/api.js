@@ -55,11 +55,23 @@ export const warehouse = {
   onChange: (fn) => { warehouseListener = fn || (() => {}) },
 }
 
+// A call made on behalf of a workspace other than the one on screen — the
+// dashboard cache warming the Central Dashboard while somebody works inside
+// Erode, or Erode's dashboard from the Command Center. Every api.* call reaches
+// `fetch` synchronously, so pinning the header for the length of `fn` is enough;
+// `id` null means company level, with no warehouse header at all.
+let whOverride = null
+export const asWarehouse = (id, fn) => {
+  const prev = whOverride
+  whOverride = { id: id || null }
+  try { return fn() } finally { whOverride = prev }
+}
+
 const fetch = (url, opts = {}) => {
   const token = session.get()
   const headers = new Headers(opts.headers || {})
   if (token) headers.set('X-Essa-Token', token)
-  const here = warehouse.get()
+  const here = whOverride ? (whOverride.id ? { id: whOverride.id } : null) : warehouse.get()
   if (here && here.id) headers.set('X-Essa-Warehouse', String(here.id))
   return window.fetch(url, { ...opts, headers, credentials: 'same-origin' })
     .then((r) => {

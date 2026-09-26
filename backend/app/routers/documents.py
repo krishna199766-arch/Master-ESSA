@@ -6,6 +6,7 @@ from typing import List, Optional
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -103,8 +104,16 @@ def list_documents(db: Session = Depends(get_db),
 
     Bills with no warehouse — everything keyed before workspaces existed — stay
     on every queue rather than disappearing from all of them. See services/scope.
+
+    Invoices only. The LR register pages and purchase-order sheets read on their
+    own screens are stored as Documents too, and listing them here put transport
+    photographs in the invoice queue as bills with no number and no total. NULL
+    is the type of every row that predates the column, and those were invoices.
     """
-    q = scope.documents(db.query(models.Document), wid)
+    q = db.query(models.Document).filter(or_(
+        models.Document.document_type == "invoice",
+        models.Document.document_type.is_(None)))
+    q = scope.documents(q, wid)
     docs = q.order_by(models.Document.id.desc()).all()
     return [_doc_out(d) for d in docs]
 

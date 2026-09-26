@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { api, session, warehouse, setUnauthorizedHandler } from './api.js'
+import { api, session, warehouse, setUnauthorizedHandler, asWarehouse } from './api.js'
+import { useCached, load as cacheLoad, reset as resetCache, remember, recall, trim as cacheTrim } from './dashcache.js'
 import { parseDictation, coerceSpoken, dictationTargets } from './voicefill.js'
 
 // ---------- helpers ----------
@@ -5343,53 +5344,68 @@ function AskReading({ read, onDismiss }) {
 }
 
 function Reports() {
-  const [cat, setCat] = useState([])
-  const [groups, setGroups] = useState([])
-  const [key, setKey] = useState(null)
-  const [rep, setRep] = useState(null)
+  // Everything this screen reads is held in the dashboard cache (dashcache.js)
+  // for the workspace it was read in, and the report that was on screen — with
+  // its filters — is remembered there too. Leaving for a dashboard and coming
+  // back finds the same report, drawn at once, re-reading behind the table.
+  const wh = warehouse.get()?.id
+  const memo = recall(REPORTS_MEMO(wh)) || {}
+  const cat = useCached(DASH.reportCat(wh).key, () => DASH.reportCat(wh).read()).data || []
+  const groups = useCached(DASH.reportGroups(wh).key, () => DASH.reportGroups(wh).read()).data || []
+  // The Store's Sales / Retail Reports, listed under the warehouse's own and
+  // opened in the shop's report page — undefined while asking, null when the
+  // Store is not signed in, [] when there is no Store here at all.
+  const store = useCached(DASH.storeReports(wh).key, () => DASH.storeReports(wh).read()).data
+  // engine + example questions
+  const askMeta = useCached(DASH.reportExamples(wh).key, () => DASH.reportExamples(wh).read()).data || null
+  const [picked, setKey] = useState(memo.key || null)
+  // Until something is picked, the first report in the catalogue — as before,
+  // but without waiting on an effect once the catalogue is already held.
+  const key = picked || cat[0]?.key || null
   const [q, setQ] = useState('')
-  const [filters, setFilters] = useState({})     // the values behind a report's params
-  const [busy, setBusy] = useState(false)
+  const [filters, setFilters] = useState(memo.filters || {})   // the values behind a report's params
   const [filtersOpen, setFiltersOpen] = useState(false)
   // --- ask ---
   const [ask, setAsk] = useState('')
   const [asked, setAsked] = useState(null)      // the interpretation, while it stands
   const [asking, setAsking] = useState(false)
-  const [askMeta, setAskMeta] = useState(null)  // engine + example questions
-  // The Store's Sales / Retail Reports, listed under the warehouse's own and
-  // opened in the shop's report page — undefined while asking, null when the
-  // Store is not signed in, [] when there is no Store here at all.
-  const [store, setStore] = useState(undefined)
-  useEffect(() => {
-    api.reportGroups().then(setGroups).catch(() => {})
-    api.storeReportCatalogue().then(setStore).catch(() => setStore([]))
-    api.reportCatalogue().then((c) => { setCat(c); if (c[0]) pick(c[0].key) })
-    api.reportAskExamples().then(setAskMeta).catch(() => {})
-  }, [])
+  // An answered question's table. Not cached: it can be narrowed after the
+  // report ran, so it is not what the report alone would return.
+  const [askRep, setAskRep] = useState(null)
   const entry = cat.find((r) => r.key === key)
   // a filter only counts if the selected report declares it — switching from a
   // date-ranged report to one without dates must not keep filtering silently
   const active = (f = filters, e = entry) =>
     Object.fromEntries(Object.entries(f).filter(([k, v]) => v && (e?.params || []).includes(k)))
-  const load = (k, f) => {
-    setBusy(true)
-    const e = cat.find((r) => r.key === k) || entry
-    return api.runReport(k, active(f, e)).then(setRep).finally(() => setBusy(false))
-  }
+  const storeKey = key?.startsWith('store:') ? key.slice(6) : null
+  // The report itself. Only once the catalogue says which filters it takes —
+  // asked before that, the same report would be read twice under two keys —
+  // and not while an answered question's table is up, which already is it.
+  const runQ = entry && !storeKey && !askRep ? DASH.report(wh, key, active()) : null
+  const rq = useCached(runQ?.key || null, () => runQ.read())
+  useEffect(() => { if (runQ) cacheTrim(`${wh || 'co'}|rep|`, REPORTS_HELD) }, [runQ?.key])
+  useEffect(() => { remember(REPORTS_MEMO(wh), { key, filters }) }, [wh, key, filters])
+  // A question nothing answered leaves no table, whatever report was up before.
+  const miss = !!(asked && !asked.report_key)
+  const rep = askRep || (miss ? null : rq.data) || null
+  const busy = rq.busy
+  const load = () => { setAskRep(null); return rq.refresh().catch(() => {}) }
   // Picking a report by hand, or touching a filter, means the question no longer
   // describes what is on screen — so the reading goes rather than sitting there
   // captioning a table it no longer refers to.
-  const pick = (k) => { setKey(k); setRep(null); setQ(''); setAsked(null); load(k, filters) }
+  // Clicking the report already open re-reads it, as it always did.
+  const pick = (k) => {
+    if (k === key && !askRep) rq.refresh().catch(() => {})
+    setKey(k); setAskRep(null); setQ(''); setAsked(null)
+  }
   // A Store report: shown in the shop's own page, which has its own period,
   // branch and till filters and its own export. '' is the Store's catalogue.
-  const pickStore = (k) => { setKey('store:' + k); setRep(null); setQ(''); setAsked(null) }
-  const storeKey = key?.startsWith('store:') ? key.slice(6) : null
+  const pickStore = (k) => { setKey('store:' + k); setAskRep(null); setQ(''); setAsked(null) }
   const storeCount = (store || []).reduce((n, g) => n + g.reports.length, 0)
   const setFilter = (p, v) => {
-    const next = { ...filters, [p]: v }
-    setFilters(next)
+    setFilters({ ...filters, [p]: v })
     setAsked(null)
-    load(key, next)
+    setAskRep(null)
   }
 
   // An answered question drives the ordinary controls: it selects the report in
@@ -5410,9 +5426,9 @@ function Reports() {
       if (r.ok && r.report) {
         setKey(r.interpretation.report_key)
         setFilters(r.interpretation.applied || {})
-        setRep(r.report)
+        setAskRep(r.report)
       } else {
-        setRep(null)
+        setAskRep(null)
       }
     } catch (e) {
       // The frontend is served off disk and picks up a rebuild on refresh, but
@@ -5428,7 +5444,7 @@ function Reports() {
             + 'restart the backend (Ctrl-C in the run window, then run.bat again) and ask again'
           : (e.detail || 'the question could not be sent'),
       })
-      setRep(null)
+      setAskRep(null)
     }
     setAsking(false)
   }
@@ -5442,11 +5458,10 @@ function Reports() {
   // by what it IS rather than by which column it sits in: figures grouped, dates
   // read back as DD-MM-YYYY like everywhere else, everything else left alone.
   const fmt = (v) => typeof v === 'number' ? v.toLocaleString('en-IN', { maximumFractionDigits: 2 }) : (fmtLoose(v) ?? '')
-  // A question that routed nowhere: no table, and no report claiming to be it
-  const miss = !!(asked && !asked.report_key)
   // Dismissing a miss puts the previously selected report back, rather than
-  // leaving the pane empty with a live selection behind it
-  const dismissReading = () => { setAsked(null); if (!rep && key) load(key, filters) }
+  // leaving the pane empty with a live selection behind it. Clearing the
+  // reading is enough: the report's own read is still held.
+  const dismissReading = () => { setAsked(null) }
   return (
     <div className="body">
       <Sidebar id="reports" label="Reports">
@@ -5559,7 +5574,7 @@ function Reports() {
             {dateParams.length > 0 && (
               <div style={{ padding: '0 var(--gutter)' }}>
                 <FilterPanel open={filtersOpen} active={Object.keys(active()).length}
-                  onClear={() => { setFilters({}); load(key, {}) }}
+                  onClear={() => { setFilters({}); setAskRep(null) }}
                   hint={`This report accepts: ${dateParams.map((p) => PARAM_LABEL[p]).join(', ')}`}>
                   {dateParams.map((p) => (
                     <DateField key={p} label={PARAM_LABEL[p]} width={150}
@@ -5597,6 +5612,13 @@ function Reports() {
           <div className="empty" style={{ marginTop: 60 }}>
             No report answers that question.<br />
             <span className="small">Pick one from the list on the left.</span>
+          </div>
+        ) : rq.error && !busy ? (
+          // Said, rather than "Loading report…" for ever, which is what a
+          // failed read used to leave behind.
+          <div className="empty" style={{ marginTop: 60 }}>
+            The report could not be read: {rq.error.detail || rq.error.message}<br />
+            <button className="btn" style={{ marginTop: 10 }} onClick={load}>Try again</button>
           </div>
         ) : <div className="empty">Loading report…</div>}
         </>}
@@ -13505,6 +13527,122 @@ function ChooseWarehouse({ onEnter, user }) {
 }
 
 // ==========================================================================
+//  The dashboards' reads, in one place
+//  ------------------------------------------------------------------------
+//  Each dashboard reads through the cache in dashcache.js, and the shell warms
+//  that cache ahead of time (warmDashboards, below). Both must ask the same
+//  question under the same key, or the warm-up fills a slot the screen never
+//  looks in — so the key and the read are defined once, here.
+//
+//  `wh` is the workspace the read belongs to: null for company level (the
+//  Command Center and the Central Dashboard are only ever opened outside a
+//  warehouse), an id for a warehouse's own dashboard.
+// ==========================================================================
+function readWarehouseDash() {
+  // allSettled, not all: an inventory scan that fails must not blank the six
+  // figures that loaded. What is missing is said out loud instead.
+  return Promise.allSettled([
+    // the GRN figures, not every GRN — the full list was 17 MB on a big store
+    api.purchasesSummary(), api.inventorySummary(), api.listOutwards('posted'),
+    api.listOutwards('draft'), api.pendingBills(), api.listReturns(),
+    // LR counts over the whole register — the list stops at 500 rows
+    api.lrSummary(), api.listSuppliers(), api.notifications(), api.deadStockSummary(),
+  ]).then((r) => {
+    const v = (i, fb) => (r[i].status === 'fulfilled' ? r[i].value : fb)
+    return {
+      partial: r.some((x) => x.status === 'rejected'),
+      d: {
+        grns: v(0, { drafts: [], recent: [], posted: 0, short_lines: 0, short_value: 0 }),
+        stock: v(1, {}), transit: v(2, []), outDrafts: v(3, []),
+        bills: v(4, []), returns: v(5, []),
+        lr: v(6, { total: 0, pending: 0, unlinked: 0 }), suppliers: v(7, []),
+        // The same feed the bell reads. One call rather than a second pass for
+        // the dead-stock tile: the notices already carry it, and two reads of
+        // one queue is two chances to print two different numbers for it.
+        notifs: v(8, { notices: [], counts: {} }),
+        // the same read the module opens on — KPIs, age bands and the clearance
+        // trend, so the section below is the module's own arithmetic and not a
+        // second calculation of it that could disagree
+        dead: v(9, null),
+      },
+    }
+  })
+}
+
+const DASH = {
+  command: (day, scope) => ({ key: `co|command|${day || ''}|${scope || ''}`,
+    read: () => api.commandOverview(day || undefined, scope || undefined) }),
+  central: (days, scope) => ({ key: `co|central|${days}|${scope || ''}`,
+    read: () => api.locationOverview(days, scope) }),
+  sales: (days, scope) => ({ key: `co|sales|${days}|${scope || ''}`,
+    read: () => api.storeSales(days, scope) }),
+  warehouse: (wh) => ({ key: `${wh || 'co'}|dash`, read: readWarehouseDash }),
+  charts: (wh) => ({ key: `${wh || 'co'}|charts`, read: () => api.dashboardCharts() }),
+  examples: (wh) => ({ key: `${wh || 'co'}|examples`, read: () => api.commandExamples() }),
+  // The Reports screen. Its lists fail soft, the way the screen always took
+  // them: no groups falls back to the built-in headings, no Store is [].
+  reportCat: (wh) => ({ key: `${wh || 'co'}|repcat`, read: () => api.reportCatalogue() }),
+  reportGroups: (wh) => ({ key: `${wh || 'co'}|repgroups`,
+    read: () => api.reportGroups().catch(() => []) }),
+  storeReports: (wh) => ({ key: `${wh || 'co'}|storereps`,
+    read: () => api.storeReportCatalogue().catch(() => []) }),
+  reportExamples: (wh) => ({ key: `${wh || 'co'}|repeg`,
+    read: () => api.reportAskExamples().catch(() => null) }),
+  // One report under one set of filters. The filters are sorted into the key
+  // so the same question asked in a different order is the same entry.
+  report: (wh, key, params) => ({
+    key: `${wh || 'co'}|rep|${key}|${JSON.stringify(Object.entries(params || {}).sort())}`,
+    read: () => api.runReport(key, params) }),
+}
+
+// Which report the Reports screen had up, per workspace — see Reports.
+const REPORTS_MEMO = (wh) => `${wh || 'co'}|reports-open`
+// How many report results are held per workspace before the oldest go.
+const REPORTS_HELD = 12
+
+// How recent a held read must be for the warm-up to leave it alone. Opening a
+// screen always re-reads (behind what is drawn); this only spaces the warm-up.
+const WARM_FRESH = 60 * 1000
+
+/** Fill the cache for the screens this account can switch to, each read under
+ *  its own workspace's header whatever is on screen. Failures are left for the
+ *  screen to report when it is opened — a warm-up has nobody to tell. */
+function warmDashboards({ command, central, warehouses, charts, fresh = WARM_FRESH }) {
+  const out = []
+  const warm = (wh, q) => out.push(asWarehouse(wh, () =>
+    cacheLoad(q.key, q.read, { fresh }).catch(() => {})))
+  if (command) warm(null, DASH.command('', null))
+  if (central) { warm(null, DASH.central(14, null)); warm(null, DASH.sales(14, null)) }
+  if (command || central) warm(null, DASH.examples(null))
+  for (const wh of warehouses || []) {
+    warm(wh, DASH.warehouse(wh))
+    // the charts view is one more read, worth it only where somebody is standing
+    if (charts) warm(wh, DASH.charts(wh))
+  }
+  return Promise.all(out)
+}
+
+/** The Reports screen for one workspace: its lists, and the report it will
+ *  open on — the one left up there, or the first in the catalogue. Only the
+ *  one: a warm-up that ran all thirty-three registers would cost more than
+ *  every visit it saved. */
+function warmReports(wh, fresh = WARM_FRESH) {
+  const warm = (q) => asWarehouse(wh, () => cacheLoad(q.key, q.read, { fresh }))
+  warm(DASH.reportGroups(wh)).catch(() => {})
+  warm(DASH.storeReports(wh)).catch(() => {})
+  warm(DASH.reportExamples(wh)).catch(() => {})
+  return warm(DASH.reportCat(wh)).then((cat) => {
+    const memo = recall(REPORTS_MEMO(wh)) || {}
+    const e = (cat || []).find((r) => r.key === memo.key) || (memo.key ? null : cat?.[0])
+    if (!e) return undefined         // a Store report, or one no longer listed
+    // the same narrowing the screen applies — only filters this report takes
+    const params = Object.fromEntries(Object.entries(memo.filters || {})
+      .filter(([k, v]) => v && (e.params || []).includes(k)))
+    return warm(DASH.report(wh, e.key, params))
+  }).catch(() => {})
+}
+
+// ==========================================================================
 //  Ask anything — one line first, the rows behind it
 //  ------------------------------------------------------------------------
 //  The Reports screen's question box picks a register and draws the table. This
@@ -13549,12 +13687,13 @@ function AskAnything({ go, big, placeholder, seed }) {
   const [q, setQ] = useState('')
   const [ans, setAns] = useState(null)
   const [busy, setBusy] = useState(false)
-  const [meta, setMeta] = useState(null)
   const [details, setDetails] = useState(false)
   const spoken = useRef(false)
   const asked = useRef(null)
 
-  useEffect(() => { api.commandExamples().then(setMeta).catch(() => {}) }, [])
+  // Cached with the dashboards it sits on, so the examples do not pop in late.
+  const wh = warehouse.get()?.id
+  const meta = useCached(DASH.examples(wh).key, () => DASH.examples(wh).read()).data || null
 
   const say = (text) => {
     // Only for a question that was ASKED by voice: reading every typed answer
@@ -13775,27 +13914,23 @@ const CC_SERIES = [
 ]
 
 function CommandCenter({ go, toast, user, role, onEnter }) {
-  const [ov, setOv] = useState(null)
   const [day, setDay] = useState('')
   const [scope, setScope] = useState(null)        // one warehouse, or every one
-  const [err, setErr] = useState('')
-  const [busy, setBusy] = useState(false)
   const [view, setView] = useState('sales')
   // What a clicked row asks the question box — a product's SKU traces it end to
   // end, a place asks for its sales. See AskAnything's `seed`.
   const [seed, setSeed] = useState(null)
   const ask = (q) => setSeed({ q, n: Date.now() })
 
-  const load = useCallback(() => {
-    setBusy(true)
-    return api.commandOverview(day || undefined, scope || undefined)
-      .then((r) => { setOv(r); setErr('') })
-      .catch((e) => setErr(e.status === 404 || e.status === 405
-        ? 'restart'
-        : (e.detail || 'The Command Center could not be read')))
-      .finally(() => setBusy(false))
-  }, [day, scope])
-  useEffect(() => { load() }, [load])
+  // Held in the dashboard cache: coming back to this screen draws the last
+  // read at once and refreshes behind it. See dashcache.js.
+  const cc = useCached(DASH.command(day, scope).key, () => DASH.command(day, scope).read())
+  const ov = cc.data || null
+  const busy = cc.busy
+  const load = cc.refresh
+  const err = !cc.error ? ''
+    : (cc.error.status === 404 || cc.error.status === 405) ? 'restart'
+      : (cc.error.detail || 'The Command Center could not be read')
 
   if (err === 'restart') return (
     <div className="screen scrolls">
@@ -13869,7 +14004,7 @@ function CommandCenter({ go, toast, user, role, onEnter }) {
         <input type="date" value={day} max={ov?.day} style={{ width: 150 }}
           title="Look at another business day" onChange={(e) => setDay(e.target.value)} />
         {day && <button className="btn" onClick={() => setDay('')}>Today</button>}
-        <button className="btn" onClick={load} disabled={busy}>{busy ? 'Reading…' : 'Refresh'}</button>
+        <button className="btn" onClick={() => load().catch(() => {})} disabled={busy}>{busy ? 'Reading…' : 'Refresh'}</button>
       </div>
 
       <div className="screenbody">
@@ -14317,26 +14452,23 @@ function AuditTrail({ go }) {
 //  in N round trips.
 // ==========================================================================
 function CentralDashboard({ toast, go, onEnter }) {
-  const [ov, setOv] = useState(null)
-  const [err, setErr] = useState(null)
   const [scope, setScope] = useState(null)      // warehouse id, or null for all
   const [days, setDays] = useState(14)
   const [busy, setBusy] = useState(false)
 
-  const [sales, setSales] = useState(null)
-  const load = useCallback(() => api.locationOverview(days, scope)
-    .then((r) => { setOv(r); setErr(null) })
-    .catch((e) => setErr(e.status === 404 ? 'restart' : (e.detail || e.message))),
-  [days, scope])
-  useEffect(() => { load() }, [load])
+  // Both reads are held in the dashboard cache, so switching back here draws
+  // the last figures at once and refreshes behind them. See dashcache.js.
+  const oq = useCached(DASH.central(days, scope).key, () => DASH.central(days, scope).read())
+  const ov = oq.data || null
+  const err = !oq.error ? null
+    : oq.error.status === 404 ? 'restart' : (oq.error.detail || oq.error.message)
   // Fetched on its own, and its failure is its own. The shop is a second
   // database; if it is switched off this section says so while everything above
   // it still draws.
-  useEffect(() => {
-    api.storeSales(days, scope)
-      .then(setSales)
-      .catch((e) => setSales({ available: false, reason: e.detail || e.message }))
-  }, [days, scope])
+  const sq = useCached(DASH.sales(days, scope).key, () => DASH.sales(days, scope).read())
+  const sales = sq.data
+    || (sq.error ? { available: false, reason: sq.error.detail || sq.error.message } : null)
+  const load = () => Promise.allSettled([oq.refresh(), sq.refresh()])
 
   const rebuild = async () => {
     setBusy(true)
@@ -15485,6 +15617,33 @@ function PosScreen({ screen, available, error, warehouse: wh }) {
   )
 }
 
+// The Store Dashboard, kept loaded. Every other screen of the shop is a frame
+// that loads when it is opened; this one is switched to and from all day, so it
+// is mounted OUTSIDE the per-warehouse remount (see the shell) and only hidden
+// when somebody looks elsewhere — going to the Central Dashboard and back into
+// the same warehouse finds it already drawn. While hidden it is re-read every
+// two minutes, so what it shows on the switch is never older than that.
+function StoreHomeFrame({ shown, available, error, warehouse: wh }) {
+  const box = useRef(null)
+  const shownRef = useRef(shown)
+  shownRef.current = shown
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (shownRef.current || document.visibilityState === 'hidden') return
+      // Same origin (/pos is mounted on this server), so the frame can be
+      // told to reload; a frame that has wandered off-site is left alone.
+      try { box.current?.querySelector('iframe')?.contentWindow?.location.reload() }
+      catch { /* not ours to reload */ }
+    }, 2 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [])
+  return (
+    <div className="tabpane" hidden={!shown} ref={box}>
+      <PosScreen screen={POS_HOME} available={available} error={error} warehouse={wh} />
+    </div>
+  )
+}
+
 // ==========================================================================
 //  The shell's own pieces — icons, the sidebar, the jump-to-screen palette
 //  ------------------------------------------------------------------------
@@ -16105,19 +16264,22 @@ const sum = (rows, f) => rows.reduce((a, r) => a + (+f(r) || 0), 0)
 // someone actually opens it — the aggregation walks every product and movement,
 // and the static view has no use for it.
 function DashboardCharts({ money }) {
-  const [c, setC] = useState(null)
-  const [err, setErr] = useState('')
-  useEffect(() => {
-    api.dashboardCharts().then(setC).catch((e) => setErr(
-      // The frontend is read off disk and refreshes with the browser, but routes
-      // are registered when Python starts. A backend left running from before
-      // this endpoint existed serves the new screen and 404s its calls — a
-      // restart, not a fault, and a bare "404" sends someone hunting the wrong thing.
-      (e.status === 404 || e.status === 405)
-        ? 'the server is still running the code from before the charts were added — '
-          + 'restart the backend (Ctrl-C in the run window, then run.bat again) and reload this page'
-        : `${e.message || 'the request failed'} — the figures on the static view are unaffected`))
-  }, [])
+  // Held in the dashboard cache with the figures, per warehouse.
+  const wh = warehouse.get()?.id
+  const cq = useCached(DASH.charts(wh).key, () => DASH.charts(wh).read())
+  const c = cq.data || null
+  const e = cq.error
+  // Only when there is nothing to draw: charts already held stay up through a
+  // failed refresh, the way the figures do.
+  const err = c || !e ? ''
+    // The frontend is read off disk and refreshes with the browser, but routes
+    // are registered when Python starts. A backend left running from before
+    // this endpoint existed serves the new screen and 404s its calls — a
+    // restart, not a fault, and a bare "404" sends someone hunting the wrong thing.
+    : (e.status === 404 || e.status === 405)
+      ? 'the server is still running the code from before the charts were added — '
+        + 'restart the backend (Ctrl-C in the run window, then run.bat again) and reload this page'
+      : `${e.message || 'the request failed'} — the figures on the static view are unaffected`
 
   if (err) return <div className="warnbox"><h4>The charts could not be loaded</h4>
     <div className="small" style={{ color: 'var(--text-2)' }}>{err}</div></div>
@@ -16298,9 +16460,6 @@ function DashDeadStock({ sum, open }) {
 }
 
 function Dashboard({ modules, go, company, docs, refreshDocs, user, openDeadStock, here }) {
-  const [d, setD] = useState(null)
-  const [partial, setPartial] = useState(false)
-  const [busy, setBusy] = useState(false)
   // Which half is showing. Remembered, because someone who works from the charts
   // wants the charts every morning, not the tiles again.
   const [view, setViewState] = useState(() => {
@@ -16311,36 +16470,15 @@ function Dashboard({ modules, go, company, docs, refreshDocs, user, openDeadStoc
     try { localStorage.setItem('essa_dash_view', v) } catch { /* private mode */ }
   }
 
-  // allSettled, not all: an inventory scan that fails must not blank the six
-  // figures that loaded. What is missing is said out loud instead.
-  const load = useCallback(() => {
-    setBusy(true)
-    return Promise.allSettled([
-      // the GRN figures, not every GRN — the full list was 17 MB on a big store
-      api.purchasesSummary(), api.inventorySummary(), api.listOutwards('posted'),
-      api.listOutwards('draft'), api.pendingBills(), api.listReturns(),
-      // LR counts over the whole register — the list stops at 500 rows
-      api.lrSummary(), api.listSuppliers(), api.notifications(), api.deadStockSummary(),
-    ]).then((r) => {
-      const v = (i, fb) => (r[i].status === 'fulfilled' ? r[i].value : fb)
-      setPartial(r.some((x) => x.status === 'rejected'))
-      setD({
-        grns: v(0, { drafts: [], recent: [], posted: 0, short_lines: 0, short_value: 0 }),
-        stock: v(1, {}), transit: v(2, []), outDrafts: v(3, []),
-        bills: v(4, []), returns: v(5, []),
-        lr: v(6, { total: 0, pending: 0, unlinked: 0 }), suppliers: v(7, []),
-        // The same feed the bell reads. One call rather than a second pass for
-        // the dead-stock tile: the notices already carry it, and two reads of
-        // one queue is two chances to print two different numbers for it.
-        notifs: v(8, { notices: [], counts: {} }),
-        // the same read the module opens on — KPIs, age bands and the clearance
-        // trend, so the section below is the module's own arithmetic and not a
-        // second calculation of it that could disagree
-        dead: v(9, null),
-      })
-    }).finally(() => setBusy(false))
-  }, [])
-  useEffect(() => { load() }, [load])
+  // The figures come out of the dashboard cache: leaving for the Store or the
+  // Central Dashboard and coming back draws them at once, and they re-read
+  // behind the screen. The read itself is readWarehouseDash, shared with the
+  // shell's warm-up so both hold the same thing under the same key.
+  const dq = useCached(DASH.warehouse(here?.id).key, () => DASH.warehouse(here?.id).read())
+  const d = dq.data?.d || null
+  const partial = !!dq.data?.partial
+  const busy = dq.busy
+  const load = () => dq.refresh().catch(() => {})
 
   if (!d) return <div className="empty" style={{ marginTop: 120 }}>Loading the dashboard…</div>
 
@@ -16858,13 +16996,16 @@ export default function App() {
   // own failure and the person to guess why everything stopped working.
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      session.clear(); setAuthed(false); setSel(null)
+      session.clear(); resetCache(); setAuthed(false); setSel(null)
     })
   }, [])
 
   useEffect(() => { if (authed) { refreshStatus(); refresh() } }, [authed, refresh, refreshStatus])
   const toast = (m, kind) => { setToastMsg({ m, kind }); setTimeout(() => setToastMsg(null), 3000) }
   const handleLogin = (token, u, r, perms) => {
+    // The dashboards held in memory are the last account's figures — possibly
+    // for warehouses this one is not allotted. Never shown to the next person.
+    resetCache()
     session.set(token); setUser(u); setRole(r || ''); setPerms(perms || {}); setAuthed(true)
   }
   const logout = () => {
@@ -16872,7 +17013,7 @@ export default function App() {
     // cookie outlives the logout, and the invoice images on a shared terminal
     // stay fetchable by the next person to open the tab.
     api.logout()
-    session.clear(); setAuthed(false); setSel(null); setTab('dashboard')
+    session.clear(); resetCache(); setAuthed(false); setSel(null); setTab('dashboard')
   }
   const gotoPurchase = (id) => { setSelPurchase(id); setTab('purchases') }
 
@@ -16997,6 +17138,17 @@ export default function App() {
   //: the list, so it always renders; that is what lets a non-keep-alive screen
   //: (Reports) show normally while two kept tabs sit hidden behind it.
   const alive = Array.from(new Set([...openTabs.filter(availableHere), tab]))
+  // The Store Dashboard is not one of the panes: it has a frame of its own that
+  // outlives the per-warehouse remount (StoreHomeFrame). It is for the last
+  // warehouse entered, so leaving for the company screens keeps it loaded and
+  // coming back to the same building finds it drawn.
+  const lastWh = useRef(null)
+  if (here?.id) lastWh.current = here
+  const storeWh = lastWh.current
+  const storeFrameOn = !!storeWh && posItems.some((p) => p && p.key === POS_HOME.key)
+  const panes = storeFrameOn ? alive.filter((k) => k !== POS_HOME.key) : alive
+  // More than one pane to keep, or one kept pane behind the Store Dashboard.
+  const multiPane = panes.length > 1 || (panes.length === 1 && panes[0] !== tab)
   // The open tab is remembered across sessions, so the person who signs in at
   // this terminal is not always the one who left it on Payments. One guard in
   // front of the whole chain rather than a check inside each branch: a screen
@@ -17028,6 +17180,50 @@ export default function App() {
       .catch(() => { if (live) setWhList([]) })
     return () => { live = false }
   }, [authed, here?.id])
+
+  // Reports are warmed only for an account the menu offers them to.
+  const canReports = modules.some((m) => m.key === 'reports')
+  // ------------------------------------------------------------------------
+  //  The dashboards, kept warm
+  //  ----------------------------------------------------------------------
+  //  The Command Center, the Central Dashboard and this warehouse's dashboard
+  //  are read into the cache (dashcache.js) before anybody asks for them, and
+  //  re-read every two minutes while the window is in front — so switching
+  //  between them draws at once, with figures at most a couple of minutes old
+  //  until the screen's own re-read lands. Reports get the same: their lists
+  //  and the one report the screen will open on (warmReports). The store's
+  //  dashboard is a frame, kept loaded instead (StoreHomeFrame, below).
+  useEffect(() => {
+    if (!authed || !role) return
+    const warm = () => {
+      if (document.visibilityState === 'hidden') return
+      warmDashboards({ command: canCommand, central: canCentral,
+                       warehouses: here?.id ? [here.id] : [], charts: true })
+      // Reports too, for the workspace on screen, when this account has it
+      if (canReports) warmReports(here?.id || null)
+    }
+    warm()
+    const t = setInterval(warm, 2 * 60 * 1000)
+    document.addEventListener('visibilitychange', warm)
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', warm) }
+  }, [authed, role, here?.id, canCommand, canCentral, canReports])
+  // Every other warehouse this account can enter, once, so picking one from the
+  // company screens opens on its figures too. One building at a time rather
+  // than all at once — ten reads per warehouse, fired together at sign-in, is a
+  // queue the server would make the screen on display wait behind.
+  useEffect(() => {
+    if (!authed) return
+    const others = whList.map((w) => w.id)
+      .filter((id) => String(id) !== String(here?.id)).slice(0, 8)
+    let live = true
+    ;(async () => {
+      for (const id of others) {
+        if (!live) return
+        await warmDashboards({ warehouses: [id], fresh: 5 * 60 * 1000 })
+      }
+    })()
+    return () => { live = false }
+  }, [authed, whList])
 
   // Ctrl+K (⌘K) opens the jump palette from anywhere.
   useEffect(() => {
@@ -17273,7 +17469,7 @@ export default function App() {
               {here ? 'Back to the dashboard' : 'Choose a warehouse'}</button>
           </div>
         </div></div>
-      ) : alive.length > 1 ? (
+      ) : multiPane ? (
         // MORE THAN ONE TAB OPEN. Each is mounted and only the active one is
         // shown, which is the entire mechanism behind keeping a half-written
         // order alive while somebody serves a customer at the till — React keeps
@@ -17285,11 +17481,16 @@ export default function App() {
         // one-screen-at-a-time case byte-for-byte what it has always been, so
         // multi-tab cannot regress the layout of a warehouse that never opens a
         // second one.
-        alive.map((k) => (
+        panes.map((k) => (
           <div key={k} className="tabpane" hidden={k !== tab}>{screenFor(k)}</div>
         ))
-      ) : screenFor(tab)}
+      ) : storeFrameOn && tab === POS_HOME.key ? null : screenFor(tab)}
       </React.Fragment>
+      {/* Outside the keyed fragment on purpose: it survives the trip to the
+          company screens and back. See StoreHomeFrame. */}
+      {storeFrameOn && <StoreHomeFrame warehouse={storeWh}
+        shown={!denied && tab === POS_HOME.key && String(here?.id) === String(storeWh.id)}
+        available={status?.pos?.available} error={status?.pos?.error} />}
       </main>
       </div>
 
