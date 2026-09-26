@@ -1,8 +1,11 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
-  <h4><i class="bi bi-cash-coin"></i> Salary advances</h4>
-  <a href="{{ url_for('staff.list_staff') }}" class="btn btn-outline-secondary btn-sm">Staff</a>
+  <div>
+    {{ ui.back(url_for('staff.list_staff'), 'Staff') }}
+    <h4><i class="bi bi-cash-coin"></i> Salary advances</h4>
+  </div>
 </div>
 
 <div class="row g-3 mb-3">

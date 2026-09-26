@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}{{ spec.label }} · {{ SHOP_NAME }}{% endblock %}
 {% macro cell(v) -%}
   {%- if v is number and v is not boolean -%}
@@ -8,8 +9,7 @@
 {% block content %}
 <div class="page-head">
   <div>
-    <a href="{{ url_for('reports.index', view='all') }}" class="rpt-back d-print-none">
-      <i class="bi bi-arrow-left"></i> All reports</a>
+    {{ ui.back(url_for('reports.index', view='all'), 'All reports') }}
     <h4><i class="bi bi-file-earmark-bar-graph"></i> {{ spec.label }}</h4>
     <div class="page-sub">
       {{ spec.group_label }}

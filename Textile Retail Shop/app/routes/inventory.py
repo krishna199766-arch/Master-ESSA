@@ -8,7 +8,7 @@ from app import db
 from app import warehouse_items
 from app.models import Floor, Product, Category, StockMovement
 from app.master_categories import SECTION_ORDER, grouped_categories
-from app.utils import role_required
+from app.utils import day_arg, role_required
 
 inventory_bp = Blueprint("inventory", __name__)
 
@@ -307,9 +307,31 @@ def sync_warehouse():
 def movements():
     from sqlalchemy.orm import joinedload
     # each row names its product — read with the rows, not one query per row
-    moves = (StockMovement.query.options(joinedload(StockMovement.product))
+    from datetime import datetime
+    from sqlalchemy import or_
+    # product / reference search, a reason and a date range — the register stops
+    # at 200 rows, so these are the only way to reach an older movement
+    q = (request.args.get("q") or "").strip()
+    reason = (request.args.get("reason") or "").strip()
+    d_from, d_to = day_arg("from"), day_arg("to")
+    query = StockMovement.query
+    if q:
+        like = f"%{q}%"
+        query = (query.join(Product, StockMovement.product_id == Product.id)
+                 .filter(or_(Product.name.ilike(like), Product.sku.ilike(like),
+                             StockMovement.reference.ilike(like))))
+    if reason:
+        query = query.filter(StockMovement.reason == reason)
+    if d_from:
+        query = query.filter(StockMovement.created_at >= datetime.combine(d_from, datetime.min.time()))
+    if d_to:
+        query = query.filter(StockMovement.created_at < datetime.combine(d_to, datetime.max.time()))
+    moves = (query.options(joinedload(StockMovement.product))
              .order_by(StockMovement.created_at.desc()).limit(200).all())
-    return render_template("inventory/movements.html", movements=moves)
+    reasons = [r for (r,) in db.session.query(StockMovement.reason).distinct() if r]
+    return render_template("inventory/movements.html", movements=moves, q=q, reason=reason,
+                           reasons=sorted(reasons), d_from=d_from, d_to=d_to,
+                           filtered=bool(q or reason or d_from or d_to))
 
 
 # ---------- Labels ----------

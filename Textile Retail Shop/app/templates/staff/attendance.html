@@ -1,7 +1,9 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
   <div>
+    {{ ui.back(url_for('staff.list_staff'), 'Staff') }}
     <h4><i class="bi bi-calendar-check"></i> Attendance</h4>
     <div class="page-sub">last 30 days</div>
   </div>

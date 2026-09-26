@@ -1,9 +1,13 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 {% set pf = prefill if prefill is defined else {} %}
 {% set pieces = units if units is defined else [] %}
 <div class="page-head">
-  <h4><i class="bi bi-box-seam"></i> {{ 'Edit' if product else 'New' }} Product</h4>
+  <div>
+    {{ ui.back(url_for('inventory.list_products'), 'Store Stock', smart=True) }}
+    <h4><i class="bi bi-box-seam"></i> {{ 'Edit' if product else 'New' }} Product</h4>
+  </div>
 </div>
 
 {% if product and product.warehouse_id %}

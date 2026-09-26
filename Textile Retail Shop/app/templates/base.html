@@ -146,6 +146,20 @@
     });
   }
 </script>
+<script>
+  // "← Back" on a page reached from several places (templates/_ui.html, smart):
+  // back to the page you came from when that was one of this shop's, otherwise
+  // the link's own address. history.back() keeps that page's scroll and filters.
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a.js-back')
+    if (!a || e.ctrlKey || e.metaKey || e.shiftKey) return
+    try {
+      const ref = document.referrer ? new URL(document.referrer) : null
+      if (ref && ref.origin === location.origin && ref.pathname !== location.pathname
+          && history.length > 1) { e.preventDefault(); history.back() }
+    } catch (err) { /* follow the link */ }
+  })
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

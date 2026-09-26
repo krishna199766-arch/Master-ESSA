@@ -31,10 +31,10 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 from flask_login import login_required, current_user
 
 from app import db, promotions
-from app.models import (CreditNote, CreditNoteItem, Invoice, InvoiceItem,
+from app.models import (CreditNote, CreditNoteItem, Customer, Invoice, InvoiceItem,
                         LoyaltyTxn, Product, StockMovement)
 from app.routes.pos import resolve_staff
-from app.utils import generate_number, role_required
+from app.utils import day_arg, generate_number, role_required
 
 returns_bp = Blueprint("returns", __name__)
 
@@ -263,11 +263,28 @@ def list_notes():
     from sqlalchemy.orm import joinedload
     # each row prints its bill, the bill's customer, and two people — read
     # with the rows rather than four queries per credit note
-    notes = (CreditNote.query.options(
+    from sqlalchemy import or_
+    # Search (note number, bill number, customer) and a date range — the list
+    # stops at 200, so without them an older note could not be reached at all.
+    q = (request.args.get("q") or "").strip()
+    d_from, d_to = day_arg("from"), day_arg("to")
+    query = CreditNote.query
+    if q:
+        like = f"%{q}%"
+        query = (query.join(Invoice, CreditNote.invoice_id == Invoice.id)
+                 .outerjoin(Customer, Invoice.customer_id == Customer.id)
+                 .filter(or_(CreditNote.number.ilike(like), Invoice.invoice_number.ilike(like),
+                             Customer.name.ilike(like), Customer.phone.ilike(like))))
+    if d_from:
+        query = query.filter(CreditNote.created_at >= datetime.combine(d_from, datetime.min.time()))
+    if d_to:
+        query = query.filter(CreditNote.created_at < datetime.combine(d_to, datetime.max.time()))
+    notes = (query.options(
                 joinedload(CreditNote.invoice).joinedload(Invoice.customer),
                 joinedload(CreditNote.invoice).joinedload(Invoice.staff),
                 joinedload(CreditNote.invoice).joinedload(Invoice.cashier),
                 joinedload(CreditNote.staff))
              .order_by(CreditNote.id.desc()).limit(200).all())
     total = sum(n.total for n in notes)
-    return render_template("returns/list.html", notes=notes, total=total)
+    return render_template("returns/list.html", notes=notes, total=total, q=q,
+                           d_from=d_from, d_to=d_to, filtered=bool(q or d_from or d_to))

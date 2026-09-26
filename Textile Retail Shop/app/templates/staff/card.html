@@ -1,11 +1,14 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}ID card — {{ staff.full_name }}{% endblock %}
 {% block content %}
 <div class="page-head d-print-none">
-  <h4><i class="bi bi-person-badge"></i> Staff ID card</h4>
+  <div>
+    {{ ui.back(url_for('staff.list_staff'), 'Staff', smart=True) }}
+    <h4><i class="bi bi-person-badge"></i> Staff ID card</h4>
+  </div>
   <div>
     <button onclick="window.print()" class="btn btn-brand btn-sm"><i class="bi bi-printer"></i> Print card</button>
-    <a href="{{ url_for('staff.list_staff') }}" class="btn btn-outline-secondary btn-sm">Back</a>
   </div>
 </div>
 

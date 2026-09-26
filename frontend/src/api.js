@@ -475,9 +475,10 @@ export const api = {
     return fetch('/api/outward' + (s ? '?' + s : '')).then(J)
   },
   // one page — { rows, total, counts }; counts are per status for the chips
-  outwardsPage: ({ status, kind, warehouseId, limit, offset, q }) =>
+  outwardsPage: ({ status, kind, warehouseId, limit, offset, q, date_from, date_to }) =>
     fetch('/api/outward' + qs({ status: status === 'all' ? '' : status,
-      kind: kind === 'all' ? '' : kind, warehouse_id: warehouseId, limit, offset, q })).then(J),
+      kind: kind === 'all' ? '' : kind, warehouse_id: warehouseId, limit, offset, q,
+      date_from, date_to })).then(J),
   getOutward: (id) => fetch(`/api/outward/${id}`).then(J),
   // body may carry from_warehouse_id and one of to_warehouse_id / to_store_id;
   // a bad pair (same warehouse both ends, unknown place) comes back as a 400

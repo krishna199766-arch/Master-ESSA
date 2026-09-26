@@ -1137,9 +1137,14 @@ main > .alert-dismissible { display: flex; align-items: center; }
   letter-spacing: .04em; color: var(--muted); background: var(--bg); border: 1px solid var(--line);
   border-radius: var(--radius-xs); padding: 1px 6px; white-space: nowrap; }
 
-.rpt-back { display: inline-flex; align-items: center; gap: 4px; font-size: .75rem; font-weight: 600;
+/* The way back from a page, set above its title — one look on every screen
+   (templates/_ui.html). `.rpt-back` is the Reports page's older name for it. */
+.page-back, .rpt-back { display: inline-flex; align-items: center; gap: 4px; font-size: .75rem; font-weight: 600;
   color: var(--accent-hover); text-decoration: none; margin-bottom: 4px; }
-.rpt-back:hover { color: var(--brand); }
+.page-back:hover, .rpt-back:hover { color: var(--brand); }
+.page-head > div > .page-back, .page-head > .page-back { display: flex; width: max-content; }
+/* the quick search beside a list's chips (templates/_ui.html · search) */
+.list-search { max-width: 380px; flex: 1 1 260px; }
 
 .rpt-totals { display: flex; flex-wrap: wrap; gap: 10px; }
 .rpt-total { display: flex; flex-direction: column; gap: 2px; min-width: 130px; padding: 10px 14px;

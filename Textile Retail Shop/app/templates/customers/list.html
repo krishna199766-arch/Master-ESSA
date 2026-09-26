@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
   <h4><i class="bi bi-people"></i> Customers</h4>
@@ -11,7 +12,9 @@
     <a href="{{ url_for('customers.new_customer') }}" class="btn btn-brand btn-sm"><i class="bi bi-plus"></i> New</a>
   </div>
 </div>
-<form class="mb-3"><input class="form-control" name="q" placeholder="Search name, phone, email" value="{{ q }}"></form>
+<div class="d-flex gap-2 flex-wrap mb-3">
+  {{ ui.search(q, 'Search name, phone, email…', url_for('customers.list_customers')) }}
+</div>
 {% if capped %}
 <div class="text-muted small mb-2">Showing the first {{ customers|length }} of {{ '{:,}'.format(total) }} customers{% if q %} matching “{{ q }}”{% endif %} — search by name, phone or email to find anyone else.</div>
 {% endif %}
@@ -32,7 +35,7 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="7" class="text-center text-muted">No customers.</td></tr>
+        <tr><td colspan="7" class="text-center text-muted p-4">{% if q %}Nothing matches “{{ q }}”. Clear the search.{% else %}No customers yet.{% endif %}</td></tr>
         {% endfor %}
       </tbody>
     </table>

@@ -1,7 +1,9 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
   <div>
+    {{ ui.back(url_for('inventory.list_products'), 'Store Stock') }}
     <h4 class="mb-0"><i class="bi bi-tags"></i> Product Categories</h4>
     <div class="page-sub">from the warehouse master</div>
   </div>

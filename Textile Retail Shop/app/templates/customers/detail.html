@@ -1,7 +1,11 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
-  <h4><i class="bi bi-person"></i> {{ customer.name }}</h4>
+  <div>
+    {{ ui.back(url_for('customers.list_customers'), 'Customers', smart=True) }}
+    <h4><i class="bi bi-person"></i> {{ customer.name }}</h4>
+  </div>
   <div>
     <a href="{{ url_for('customers.customer_card', cid=customer.id) }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-person-vcard"></i> Card</a>
     <a href="{{ url_for('customers.edit_customer', cid=customer.id) }}" class="btn btn-outline-primary btn-sm">Edit</a>

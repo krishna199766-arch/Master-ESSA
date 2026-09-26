@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 {# `saved` is the rejected form coming back, so nothing has to be retyped after a
    validation error. Empty on a fresh page and on an edit, where the scheme row
@@ -6,10 +7,12 @@
 {% set v = saved if saved else {} %}
 
 <div class="page-head">
-  <h4><i class="bi bi-gift"></i>
-    {{ 'Edit scheme — ' + scheme.code if scheme else 'New promotion scheme' }}</h4>
-  <a href="{{ url_for('promotions.index') }}" class="btn btn-outline-secondary btn-sm">
-    <i class="bi bi-arrow-left"></i> All schemes</a>
+  <div>
+    {% if scheme %}{{ ui.back(url_for('promotions.detail', sid=scheme.id), scheme.name) }}
+    {% else %}{{ ui.back(url_for('promotions.index'), 'All schemes') }}{% endif %}
+    <h4><i class="bi bi-gift"></i>
+      {{ 'Edit scheme — ' + scheme.code if scheme else 'New promotion scheme' }}</h4>
+  </div>
 </div>
 
 <form method="post" id="schemeForm">

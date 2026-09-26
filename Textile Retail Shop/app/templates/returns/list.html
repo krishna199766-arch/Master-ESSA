@@ -1,12 +1,29 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
-  <h4><i class="bi bi-arrow-return-left"></i> Credit notes</h4>
+  <div>
+    {{ ui.back(url_for('returns.index'), 'Returns desk') }}
+    <h4><i class="bi bi-arrow-return-left"></i> Credit notes</h4>
+  </div>
   <div class="text-end">
     <div class="kpi-label">Refunded across these</div>
     <div class="fs-5 fw-bold font-monospace" style="color:var(--brand-dark)">{{ total|inr }}</div>
   </div>
 </div>
+
+<form class="card p-3 mb-3" method="get">
+  <div class="row g-2 align-items-end">
+    <div class="col-md-4"><label class="form-label small mb-1">Search</label>
+      <input class="form-control form-control-sm" name="q" value="{{ q }}"
+             placeholder="Search credit note, bill no, customer, phone…"></div>
+    <div class="col-md-2"><label class="form-label small mb-1">From date</label>
+      <input class="form-control form-control-sm" type="date" name="from" value="{{ d_from or '' }}"></div>
+    <div class="col-md-2"><label class="form-label small mb-1">To date</label>
+      <input class="form-control form-control-sm" type="date" name="to" value="{{ d_to or '' }}"></div>
+    {{ ui.filter_actions(filtered, url_for('returns.list_notes')) }}
+  </div>
+</form>
 
 <div class="card">
   <div class="table-responsive">

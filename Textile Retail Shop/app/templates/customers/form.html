@@ -1,7 +1,13 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
-  <h4><i class="bi bi-person"></i> {{ 'Edit' if customer else 'New' }} Customer</h4>
+  <div>
+    {# editing goes back to the customer, a new one to the list it was added from #}
+    {% if customer %}{{ ui.back(url_for('customers.view_customer', cid=customer.id), customer.name) }}
+    {% else %}{{ ui.back(url_for('customers.list_customers'), 'Customers') }}{% endif %}
+    <h4><i class="bi bi-person"></i> {{ 'Edit' if customer else 'New' }} Customer</h4>
+  </div>
 </div>
 <form method="post" class="card p-3">
   <div class="row g-3">
@@ -18,6 +24,6 @@
     <div class="col-md-3"><label class="form-label">Anniversary</label>
       <input class="form-control" type="date" name="anniversary" value="{{ customer.anniversary.isoformat() if customer and customer.anniversary else '' }}"></div>
   </div>
-  <div class="mt-3"><button class="btn btn-brand">Save</button> <a href="{{ url_for('customers.list_customers') }}" class="btn btn-outline-secondary">Cancel</a></div>
+  <div class="mt-3"><button class="btn btn-brand">Save</button> <a href="{{ url_for('customers.view_customer', cid=customer.id) if customer else url_for('customers.list_customers') }}" class="btn btn-outline-secondary">Cancel</a></div>
 </form>
 {% endblock %}

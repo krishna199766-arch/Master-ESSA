@@ -1,8 +1,10 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Piece labels — {{ product.name }}{% endblock %}
 {% block content %}
 <div class="page-head d-print-none">
   <div>
+    {{ ui.back(url_for('inventory.list_products'), 'Store Stock', smart=True) }}
     <h4 class="mb-0"><i class="bi bi-upc-scan"></i> Piece labels — {{ product.name }}</h4>
     <div class="page-sub">
       <code>{{ product.sku }}</code> · {{ units|length }} garment{{ '' if units|length == 1 else 's' }}
@@ -11,7 +13,7 @@
   </div>
   <div>
     <button onclick="window.print()" class="btn btn-brand btn-sm"><i class="bi bi-printer"></i> Print</button>
-    <a href="{{ url_for('inventory.edit_product', pid=product.id) }}" class="btn btn-outline-secondary btn-sm">Back</a>
+
   </div>
 </div>
 

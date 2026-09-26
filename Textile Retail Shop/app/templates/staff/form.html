@@ -1,7 +1,11 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
-  <h4><i class="bi bi-person-badge"></i> {{ 'Edit' if staff else 'New' }} Staff</h4>
+  <div>
+    {{ ui.back(url_for('staff.list_staff'), 'Staff') }}
+    <h4><i class="bi bi-person-badge"></i> {{ 'Edit' if staff else 'New' }} Staff</h4>
+  </div>
 </div>
 <form method="post" class="card p-3">
   <div class="row g-3">

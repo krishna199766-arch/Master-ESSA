@@ -155,7 +155,7 @@ function Pager({ page, setPage, size, setSize, total, pages, from, to,
 
 function SearchBox({ value, onChange, placeholder, style, title }) {
   return (
-    <div className="searchbox" style={style}
+    <div className="searchbox" style={style} role="search"
       title={title || 'Search within what is shown. Esc clears it.'}>
       <span className="searchicon">⌕</span>
       <input value={value} onChange={(e) => onChange(e.target.value)}
@@ -214,6 +214,80 @@ function FilterPanel({ open, active, onClear, onApply, children, hint }) {
       </div>
     </div>
   )
+}
+
+// One labelled control inside a FilterPanel. Every panel lays its fields out in
+// the same box at the same width, so a filter reads the same on every screen.
+function FilterField({ label, width = 190, title, children }) {
+  return (
+    <div className="field" style={{ width }} title={title}>
+      <label>{label}</label>
+      {children}
+    </div>
+  )
+}
+
+// How many of a filter object's fields are set — the number FilterButton shows.
+const countActive = (f) => Object.values(f).filter((v) => String(v ?? '').trim()).length
+
+// ==========================================================================
+//  ← Back
+//  ------------------------------------------------------------------------
+//  One control, one wording, one place: the top-left of whatever was opened.
+//  A record opened from a list (a GRN, a dispatch, a supplier, a master) gets
+//  one, and it returns to the list it came from. The title says WHERE it goes,
+//  because "Back" on its own is a guess about what the screen considers "before".
+// ==========================================================================
+function BackButton({ onClick, to, title, disabled }) {
+  const tip = title || (to ? `Back to ${to}` : 'Back to the previous screen')
+  return (
+    <button type="button" className="btn backbtn" onClick={onClick} disabled={disabled}
+      title={tip} aria-label={tip}>
+      <span aria-hidden="true">←</span> Back
+    </button>
+  )
+}
+
+// A detail pane's header row: the way back first, then whatever names the record.
+function BackRow({ onBack, to, title, children }) {
+  return (
+    <div className="backrow">
+      <BackButton onClick={onBack} to={to} title={title} />
+      {children}
+    </div>
+  )
+}
+
+// Esc closes the dialog ON TOP — only that one. Dialogs register on a stack as
+// they open, so a product card opened over the piece-code sheet closes first and
+// leaves the sheet where it was. Skipped when something inside already used the
+// key: a SearchBox clears itself on Esc, and that must not also shut the dialog.
+const escStack = []
+let escInstalled = false
+function useEscape(onEscape, on = true) {
+  const ref = useRef(onEscape)
+  ref.current = onEscape
+  useEffect(() => {
+    if (!on) return
+    if (!escInstalled) {
+      escInstalled = true
+      window.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || e.defaultPrevented || !escStack.length) return
+        e.preventDefault()
+        escStack[escStack.length - 1]()
+      })
+    }
+    const entry = () => ref.current && ref.current()
+    escStack.push(entry)
+    return () => { const i = escStack.lastIndexOf(entry); if (i >= 0) escStack.splice(i, 1) }
+  }, [on])
+}
+
+// The × that closes a dialog. One glyph, one size, and it says what it closes.
+function CloseX({ onClick, what = 'this', style }) {
+  const tip = `Close ${what} (Esc)`
+  return <button type="button" className="modal-x" onClick={onClick} title={tip}
+    aria-label={tip} style={style}>×</button>
 }
 
 // Collapsed panels are remembered per screen and survive a reload, because a
@@ -1654,7 +1728,7 @@ const REVIEW_TABS = [
     hint: 'The handwritten GRN number, who received it, and anything else' },
 ]
 
-function Review({ docId, onSaved, onCreateGrn, toast }) {
+function Review({ docId, onSaved, onCreateGrn, toast, onBack }) {
   const [doc, setDoc] = useState(null)
   const [data, setData] = useState(null)
   const [flags, setFlags] = useState({})
@@ -1778,7 +1852,8 @@ function Review({ docId, onSaved, onCreateGrn, toast }) {
       <b>{doc?.filename || 'This document'}</b> was uploaded but never read.<br />
       Reading a long invoice can take longer than the upload was given.
       The pages are stored, so it can be read now without uploading them again.
-      <div style={{ marginTop: 14 }}>
+      <div style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'center' }}>
+        {onBack && <BackButton onClick={onBack} to="the invoice search" />}
         <button className="btn primary" disabled={reading} onClick={readAgain}>
           {reading ? 'Reading — this can take a minute…' : 'Read it now'}</button>
       </div>
@@ -1989,6 +2064,16 @@ function Review({ docId, onSaved, onCreateGrn, toast }) {
       </div>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div className="editor">
+          {/* Which invoice this is, and the way back to the search it was
+              picked from — the list on the left can be folded away, and then
+              this is the only visible way out. */}
+          {onBack && (
+            <BackRow onBack={onBack} to="the invoice search">
+              <h2 style={{ fontSize: 'var(--fs-lg)' }}>{sup.name || doc?.supplier_name || doc?.filename || 'Invoice'}</h2>
+              {inv.number && <span className="small mono">#{inv.number}</span>}
+              {doc?.status && <span className={'badge ' + doc.status}>{String(doc.status).replace('_', ' ')}</span>}
+            </BackRow>
+          )}
           {twin && (
             <div className="warnbox" style={{ marginBottom: 20 }}>
               <h4>Another document carries this invoice number</h4>
@@ -2235,16 +2320,31 @@ function Suppliers({ toast }) {
   const [sel, setSel] = useState(null)
   const [detail, setDetail] = useState(null)
   const [q, setQ] = useState('')
-  useEffect(() => { api.listSuppliers().then(setList) }, [])
-  useEffect(() => { if (sel) api.getSupplier(sel).then(setDetail) }, [sel])
-  const supShown = list.filter((s) => matches(s, q, ['name', 'gstin', 'state']))
+  const [scope, setScope] = useState('all')
+  const [loaded, setLoaded] = useState(false)
+  useEffect(() => { api.listSuppliers().then(setList).finally(() => setLoaded(true)) }, [])
+  useEffect(() => { if (sel) api.getSupplier(sel).then(setDetail); else setDetail(null) }, [sel])
+  const trained = list.filter((s) => s.has_profile).length
+  const supShown = list
+    .filter((s) => scope === 'all' || (scope === 'trained') === !!s.has_profile)
+    .filter((s) => matches(s, q, ['name', 'gstin', 'state']))
   const supPage = usePaged(supShown, 50)
   return (
     <div className="body">
       <Sidebar id="suppliers" label="Suppliers">
         <div className="head"><h3>Suppliers · {list.length}</h3></div>
         <SearchBox value={q} onChange={setQ} placeholder="Search name, GSTIN, state…" />
+        <div className="toolbar"><FilterChips value={scope} onChange={setScope} options={[
+          ['trained', 'Trained', trained, 'Invoices from these are read with a learned format'],
+          ['untrained', 'Not trained', list.length - trained, 'No format learned yet — confirm one of their invoices to train it'],
+          ['all', 'All', list.length, 'Every supplier'],
+        ]} /></div>
         <div className="list">
+          {!loaded && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>Loading…</div>}
+          {loaded && list.length === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
+            No suppliers yet. They are added when an invoice from them is confirmed.</div>}
+          {list.length > 0 && supShown.length === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
+            Nothing matches. Try “All” or clear the search.</div>}
           {supPage.slice.map((s) => (
             <div key={s.id} className={'sup-row' + (sel === s.id ? ' sel' : '')} onClick={() => setSel(s.id)}>
               <div className="t">{s.name}</div>
@@ -2259,7 +2359,7 @@ function Suppliers({ toast }) {
       </Sidebar>
       {detail ? (
         <div className="sup-detail">
-          <h2 style={{ marginTop: 0 }}>{detail.name}</h2>
+          <BackRow onBack={() => setSel(null)} to="the supplier list"><h2>{detail.name}</h2></BackRow>
           <div className="kv">
             <div className="k">GSTIN</div><div className="mono">{detail.gstin || '—'}</div>
             <div className="k">State</div><div>{detail.state || '—'} ({detail.state_code || '—'})</div>
@@ -2738,8 +2838,15 @@ function Purchases({ selId, setSelId, toast }) {
   // receipts is tens of thousands of GRNs, and sending them all to filter here
   // was 17 MB on every open of this screen.
   const qd = useDebounced(q)
+  // ⛭ Filters — the same fields the invoice search offers, answered by the server
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [gf, setGf] = useState(NO_INVOICE_FILTERS)
+  const gfd = useDebounced(gf)
+  const setGfField = (k) => (e) => setGf((x) => ({ ...x, [k]: e && e.target ? e.target.value : e }))
+  const gActive = countActive(gf)
   const grnPage = useServerPaged(({ limit, offset }) =>
-    api.purchasesPage({ limit, offset, q: qd, status: scope }), `${scope}|${qd}`)
+    api.purchasesPage({ limit, offset, q: qd, status: scope, ...gfd }),
+  `${scope}|${qd}|${JSON.stringify(gfd)}`)
   const counts = {
     draft: grnPage.counts.draft || 0, posted: grnPage.counts.posted || 0,
     short: grnPage.counts.short || 0, all: grnPage.counts.all || 0,
@@ -2783,19 +2890,33 @@ function Purchases({ selId, setSelId, toast }) {
       <Sidebar id="grn" label="GRNs">
         <div className="head"><h3>GRNs · {grnPage.total.toLocaleString('en-IN')}</h3></div>
         {counts.all > 0 && <>
-          <SearchBox value={q} onChange={setQ} placeholder="Search supplier, invoice, GRN no, status…" />
+          <SearchBox value={q} onChange={setQ} placeholder="Search supplier, invoice, GRN no…" />
           <div className="toolbar"><FilterChips value={scope} onChange={setScope} options={[
             ['draft', 'Draft', counts.draft, 'Receipts still being worked on'],
             ['posted', 'Posted', counts.posted, 'Receipts already in stock'],
             ['short', 'Short', counts.short, 'Receipts with goods billed but not delivered'],
             ['all', 'All', counts.all, 'Every receipt'],
-          ]} /></div>
+          ]} />
+          <FilterButton open={filtersOpen} onToggle={() => setFiltersOpen((o) => !o)} active={gActive} /></div>
+          <FilterPanel open={filtersOpen} active={gActive} onClear={() => setGf(NO_INVOICE_FILTERS)}>
+            <FilterField label="Supplier">
+              <input value={gf.supplier} onChange={setGfField('supplier')} placeholder="Any supplier" />
+            </FilterField>
+            <DateField label="Invoice date from" value={gf.date_from} onChange={setGfField('date_from')} />
+            <DateField label="Invoice date to" value={gf.date_to} onChange={setGfField('date_to')} />
+            <FilterField label="Invoice number">
+              <input value={gf.invoice_no} onChange={setGfField('invoice_no')} placeholder="e.g. 40610" />
+            </FilterField>
+            <FilterField label="GRN number">
+              <input value={gf.grn_no} onChange={setGfField('grn_no')} placeholder="e.g. GRN15180" />
+            </FilterField>
+          </FilterPanel>
         </>}
         <div className="list">
           {grnPage.loading && grnPage.rows.length === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>Loading…</div>}
           {!grnPage.loading && counts.all === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>No GRNs yet. Open a confirmed document and click “Create GRN”.</div>}
           {!grnPage.loading && counts.all > 0 && grnPage.total === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
-            Nothing matches. {q ? 'Clear the search' : 'Try “All”'} to see the other {counts.all.toLocaleString('en-IN')} receipt(s).</div>}
+            Nothing matches. Try “All”, clear the search{gActive ? ' or clear the filters' : ''} to see the other {counts.all.toLocaleString('en-IN')} receipt(s).</div>}
           {grnPage.slice.map((p) => (
             <div key={p.id} className={'doc-row' + (selId === p.id ? ' sel' : '')} onClick={() => setSelId(p.id)}>
               <div className="t">{p.supplier_name || 'GRN #' + p.id}</div>
@@ -2812,15 +2933,15 @@ function Purchases({ selId, setSelId, toast }) {
             </div>
           ))}
         </div>
-        <Pager {...grnPage} noun="receipt" />
+        <Pager {...grnPage} noun="GRN" />
       </Sidebar>
       {grn ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div className="editor">
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 14 }}>
-              <h2 style={{ margin: 0 }}>{grn.supplier_name}</h2>
+            <BackRow onBack={() => setSelId(null)} to="the GRN list">
+              <h2>{grn.supplier_name}</h2>
               <span className={'badge ' + (grn.status === 'posted' ? 'confirmed' : 'uploaded')}>{grn.status}</span>
-            </div>
+            </BackRow>
             <div className="kv" style={{ margin: '12px 0 20px', gridTemplateColumns: '130px 1fr 130px 1fr' }}>
               <div className="k">GRN No</div><div>{grn.grn_no || '—'}</div>
               <div className="k">Invoice</div><div>{grn.invoice_number} · {fmtDate(grn.invoice_date)}</div>
@@ -3421,6 +3542,7 @@ function Inventory({ toast }) {
   }
   // --- per-piece codes: clicking a quantity opens the individual garments ---
   const [units, setUnits] = useState(null)      // {product, units[], serialisable, reason}
+  useEscape(() => setUnits(null), !!units)
   const [zoom, setZoom] = useState(null)        // one piece, viewed large
   const openUnits = async (p) => {
     try { setUnits(await api.productUnits(p.id)); setZoom(null) }
@@ -3518,6 +3640,9 @@ function Inventory({ toast }) {
           Stock on hand, labels and per-piece codes
         </div>
       </div>
+      {/* The list and the product it opened, side by side. `.screen` is a
+          column, so the detail panel used to land UNDER the list. */}
+      <div className="body">
       <div className="screenbody">
         <div style={{ display: 'flex', gap: 14, marginBottom: 20 }}>
           <Stat label="Products" value={summary?.product_count ?? '—'} accent="count" />
@@ -3526,8 +3651,7 @@ function Inventory({ toast }) {
           <Stat label="Detailed (mobile)" value={summary ? `${summary.detailed ?? 0} / ${summary.product_count}` : '—'} accent="count" />
         </div>
         <div className="toolbar">
-          <SearchBox value={q} onChange={setQ} placeholder="Search SKU, barcode, description, HSN, supplier…"
-            style={{ width: 340 }} />
+          <SearchBox value={q} onChange={setQ} placeholder="Search SKU, barcode, description, HSN, supplier…" />
           <FilterChips value={stockScope} onChange={setStockScope} options={[
             ['all', 'All', products.length, 'Every product in stock'],
             ['detailed', 'Detailed', detailedCount, 'Inspected and recorded on the phone'],
@@ -3539,10 +3663,10 @@ function Inventory({ toast }) {
           <div className="spacer" />
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <input value={scan} onChange={(e) => setScan(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') lookup() }}
+              onKeyDown={(e) => { if (e.key === 'Enter') lookup(); if (e.key === 'Escape' && scan) { e.preventDefault(); setScan('') } }}
               title="Scan a QR, piece label or barcode to jump straight to that product"
-              placeholder="⌗ Scan a code…" style={{ width: 190 }} />
-            <button className="btn" onClick={() => lookup()} title="Open the scanned product">Fetch</button>
+              placeholder="⌗ Scan a code…" style={{ width: 170 }} />
+            <button className="btn" onClick={() => lookup()} title="Open the scanned product">Open</button>
             <button className="btn" onClick={printLabels}
               title={`Print a label sheet for ${labelCount} product(s) — set which in Filters`}>
               🖨 Labels ({labelCount})</button>
@@ -3620,6 +3744,11 @@ function Inventory({ toast }) {
             <th style={{ textAlign: 'right' }}>Stock</th><th style={{ textAlign: 'right' }}>Avg cost</th>
             <th style={{ textAlign: 'right' }}>Value</th></tr></thead>
           <tbody>
+            {visible.length === 0 && (
+              <tr><td colSpan={10} className="small" style={{ padding: 20, textAlign: 'center', color: 'var(--muted)' }}>
+                {products.length === 0 ? (summary ? 'No products yet — post a GRN to bring stock in.' : 'Loading…')
+                  : 'Nothing matches. Try “All”, clear the search or clear the filters.'}</td></tr>
+            )}
             {invPage.slice.map((p) => (
               <tr key={p.id} style={{ cursor: 'pointer', background: detail?.id === p.id ? 'var(--panel-2)' : '' }} onClick={() => open(p.id)}>
                 {/* The real QR, small enough for a list and still scannable off the
@@ -3703,7 +3832,7 @@ function Inventory({ toast }) {
                   ? ` · 1 ${units.product.unit_type} = ${units.product.pieces_per_unit} pcs`
                   : ''}
               </span>
-              <button className="btn" onClick={() => setUnits(null)}>✕</button>
+              <CloseX onClick={() => setUnits(null)} what="the piece codes" />
             </div>
 
             <div className="piece-body">
@@ -3797,7 +3926,8 @@ function Inventory({ toast }) {
       {detail && (
         <div className="sidebar" style={{ width: 400, borderRight: 'none', borderLeft: '1px solid var(--line)' }}>
           <div className="head"><h3>{detail.sku}</h3>
-            <button className="btn" style={{ padding: '2px 9px' }} onClick={() => setDetail(null)}>×</button></div>
+            <button className="btn" style={{ padding: '2px 9px' }} onClick={() => setDetail(null)}
+              title="Close this product" aria-label="Close this product">×</button></div>
           <div style={{ padding: 16, overflowY: 'auto' }}>
             {/* Inventory is a VIEW of the product, not a second entry form. Everything
                 here is decided upstream: description / HSN / UOM come off the invoice,
@@ -3913,6 +4043,7 @@ function Inventory({ toast }) {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }
@@ -4001,6 +4132,7 @@ function ProductIdent({ product, fallback }) {
 // The full card, opened by clicking a QR — everything about the item at once,
 // with the code big enough to scan across a packing bench.
 function ProductCardModal({ product, onClose }) {
+  useEscape(onClose, !!product)
   if (!product) return null
   const money2 = (v) => (v == null ? '—' : '₹ ' + money(v))
   return (
@@ -4009,7 +4141,7 @@ function ProductCardModal({ product, onClose }) {
         <div className="piece-head">
           <b className="mono">{product.sku || product.code}</b>
           <span>{product.name}</span>
-          <button className="btn" style={{ marginLeft: 'auto' }} onClick={onClose}>✕</button>
+          <CloseX onClick={onClose} what="the product card" />
         </div>
         <div className="piece-body" style={{ display: 'flex', gap: 20 }}>
           <div style={{ textAlign: 'center' }}>
@@ -4098,6 +4230,7 @@ function ScanBox({ onScan, placeholder, label }) {
 // Stock it cannot dispatch is not offered at all: a row for something with none
 // on hand can only be refused at posting time.
 function ProductPicker({ products, already, onAdd, onClose }) {
+  useEscape(onClose)
   const [q, setQ] = useState('')
   const [picked, setPicked] = useState({})        // product_id -> qty, as typed
   const here = new Set((already || []).map(Number))
@@ -4142,10 +4275,10 @@ function ProductPicker({ products, already, onAdd, onClose }) {
         <div className="piece-head">
           <b>Add products</b>
           <span className="small" style={{ color: 'var(--muted)' }}>{shown.length} in stock</span>
-          <button className="btn" style={{ marginLeft: 'auto' }} onClick={onClose}>✕</button>
+          <CloseX onClick={onClose} what="the product picker" />
         </div>
         <div className="piece-body">
-          <SearchBox value={q} onChange={setQ} placeholder="Search product / SKU / size / colour…" />
+          <SearchBox value={q} onChange={setQ} placeholder="Search product, SKU, size, colour…" />
           <div className="tablewrap" style={{ marginTop: 10 }}>
             <table className="items entry">
               <thead><tr>
@@ -4207,6 +4340,22 @@ function ProductPicker({ products, already, onAdd, onClose }) {
 }
 
 // ---------- stock outward ----------
+// One vocabulary for where a dispatch stands, on both ends of it. The Outward
+// chips said "Sent" while its rows said "posted", and a received note wore the
+// same grey as a draft; Inward called the same note "in transit". `inbound` is
+// the receiving end's view of a sent note — to them it is on its way.
+const TRANSFER_STATE = {
+  draft: ['Draft', 'draft', 'Prepared, nothing dispatched yet'],
+  posted: ['Sent', 'review', 'Dispatched, not yet accepted at the far end'],
+  received: ['Received', 'confirmed', 'Accepted at the destination'],
+}
+function TransferBadge({ status, inbound }) {
+  const [label, cls, tip] = TRANSFER_STATE[status] || [status, 'uploaded', status]
+  return <span className={'badge ' + cls} title={tip}>
+    {inbound && status === 'posted' ? 'In transit' : label}</span>
+}
+const NO_OUT_FILTERS = { kind: '', date_from: '', date_to: '' }
+
 function StockOutward({ toast }) {
   const [products, setProducts] = useState([])
   const [sel, setSel] = useState(null)
@@ -4234,8 +4383,13 @@ function StockOutward({ toast }) {
   // One page at a time from the server, searched and filtered there — every
   // dispatch ever made is tens of thousands of notes, 10 MB sent whole.
   const qd = useDebounced(q)
+  // ⛭ Filters — where it went and when, on top of the status chips
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [of, setOf] = useState(NO_OUT_FILTERS)
+  const setOfField = (k) => (e) => setOf((x) => ({ ...x, [k]: e && e.target ? e.target.value : e }))
+  const oActive = countActive(of)
   const outPage = useServerPaged(({ limit, offset }) =>
-    api.outwardsPage({ status: scope, limit, offset, q: qd }), `${scope}|${qd}`)
+    api.outwardsPage({ status: scope, limit, offset, q: qd, ...of }), `${scope}|${qd}|${JSON.stringify(of)}`)
   const counts = outPage.counts
   const [zoom, setZoom] = useState(null)          // a product card, opened large
   const [cards, setCards] = useState({})          // product_id -> full record, for the draft rows
@@ -4362,24 +4516,39 @@ function StockOutward({ toast }) {
     <div className="body">
       <Sidebar id="outward" label="Outwards">
         <div className="head"><h3>Outwards · {outPage.total.toLocaleString('en-IN')}</h3>
-          <button className="btn primary" style={{ padding: '4px 10px' }} onClick={() => { setCreating(true); setSel(null) }}>+ New</button></div>
+          <button className="btn primary" style={{ padding: '4px 10px' }} onClick={() => { setCreating(true); setSel(null); setDetail(null) }}>+ New</button></div>
         {(counts.all || 0) > 0 && <>
-          <SearchBox value={q} onChange={setQ} placeholder="Search destination, code, status…" />
+          <SearchBox value={q} onChange={setQ} placeholder="Search destination, code…" />
           <div className="toolbar"><FilterChips value={scope} onChange={setScope} options={[
-            ['draft', 'Draft', counts.draft || 0, 'Prepared, nothing dispatched yet'],
-            ['posted', 'Sent', counts.posted || 0, 'Dispatched, not yet accepted'],
-            ['received', 'Received', counts.received || 0, 'Accepted at the destination'],
+            ['draft', 'Draft', counts.draft || 0, TRANSFER_STATE.draft[2]],
+            ['posted', 'Sent', counts.posted || 0, TRANSFER_STATE.posted[2]],
+            ['received', 'Received', counts.received || 0, TRANSFER_STATE.received[2]],
             ['all', 'All', counts.all || 0, 'Every dispatch'],
-          ]} /></div>
+          ]} />
+          <FilterButton open={filtersOpen} onToggle={() => setFiltersOpen((o) => !o)} active={oActive} /></div>
+          <FilterPanel open={filtersOpen} active={oActive} onClear={() => setOf(NO_OUT_FILTERS)}>
+            <FilterField label="Sent to">
+              <select value={of.kind} onChange={setOfField('kind')}>
+                <option value="">Anywhere</option>
+                <option value="store">A store</option>
+                <option value="transfer">Another warehouse</option>
+                <option value="dispatch">Other (customer, named place)</option>
+              </select>
+            </FilterField>
+            <DateField label="Dispatched from" value={of.date_from} onChange={setOfField('date_from')} />
+            <DateField label="Dispatched to" value={of.date_to} onChange={setOfField('date_to')} />
+          </FilterPanel>
         </>}
         <div className="list">
           {outPage.loading && outPage.rows.length === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>Loading…</div>}
+          {!outPage.loading && !(counts.all > 0) && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
+            No dispatches yet. Press “+ New” to send stock out.</div>}
           {!outPage.loading && (counts.all || 0) > 0 && outPage.total === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
-            Nothing matches. Try “All” or clear the search.</div>}
+            Nothing matches. Try “All”, clear the search{oActive ? ' or clear the filters' : ''}.</div>}
           {outPage.slice.map((o) => (
             <div key={o.id} className={'doc-row' + (sel === o.id && !creating ? ' sel' : '')} onClick={() => { setSel(o.id); setCreating(false) }}>
               <div className="t">{o.to_destination || o.code}</div>
-              <div className="m"><span className={'badge ' + (o.status === 'posted' ? 'confirmed' : 'uploaded')}>{o.status}</span>
+              <div className="m"><TransferBadge status={o.status} />
                 {/* A transfer comes back to us and a shop dispatch does not, which
                     is the difference that decides whether anyone has to receive it */}
                 {o.kind === 'transfer' && <span className="badge" title="Warehouse to warehouse — the far end still has to count it in">transfer</span>}
@@ -4394,7 +4563,7 @@ function StockOutward({ toast }) {
       {creating ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div className="editor">
-            <h2 style={{ marginTop: 0 }}>New Stock Outward</h2>
+            <BackRow onBack={() => setCreating(false)} to="the dispatch list"><h2>New Stock Outward</h2></BackRow>
             <div className="grid" style={{ maxWidth: 640 }}>
               <DateField label="Date" value={form.date} onChange={(v) => setForm({ ...form, date: v })} />
               <div className="field"><label>From warehouse</label>
@@ -4503,10 +4672,10 @@ function StockOutward({ toast }) {
       ) : detail ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div className="editor">
-            <div style={{ display: 'flex', gap: 12, alignItems: 'baseline' }}>
-              <h2 style={{ margin: 0 }}>{detail.to_destination}</h2>
-              <span className={'badge ' + (detail.status === 'posted' ? 'confirmed' : 'uploaded')}>{detail.status}</span>
-              {detail.kind === 'transfer' && <span className="badge">warehouse transfer</span>}</div>
+            <BackRow onBack={() => { setSel(null); setDetail(null) }} to="the dispatch list">
+              <h2>{detail.to_destination || detail.code}</h2>
+              <TransferBadge status={detail.status} />
+              {detail.kind === 'transfer' && <span className="badge">warehouse transfer</span>}</BackRow>
             <div className="kv" style={{ margin: '12px 0 20px', gridTemplateColumns: '130px 1fr 130px 1fr' }}>
               <div className="k">Code</div><div>{detail.code}</div><div className="k">Date</div><div>{fmtDate(detail.date)}</div>
               <div className="k">From</div><div>{detail.from_warehouse || detail.from_location}</div>
@@ -4595,8 +4764,13 @@ function StockInward({ toast }) {
   const [hit, setHit] = useState(null)             // the line a scan just landed on
   // Paged by the server: "Received" is every transfer ever accepted.
   const qd = useDebounced(q)
+  // ⛭ Filters — when it was dispatched
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [inf, setInf] = useState({ date_from: '', date_to: '' })
+  const iActive = countActive(inf)
   const inwPage = useServerPaged(({ limit, offset }) =>
-    api.outwardsPage({ status: scope, limit, offset, q: qd }), `${scope}|${qd}`)
+    api.outwardsPage({ status: scope, limit, offset, q: qd, ...inf }), `${scope}|${qd}|${JSON.stringify(inf)}`)
+  const icounts = inwPage.counts || {}
   // how many this chip holds before any search — whether there is anything to search
   const inScope = scope === 'all' ? (inwPage.counts.all || 0) : (inwPage.counts[scope] || 0)
 
@@ -4644,26 +4818,28 @@ function StockInward({ toast }) {
     <div className="body">
       <Sidebar id="inward" label="Stock Inward">
         <div className="head"><h3>Stock Inward · {inwPage.total.toLocaleString('en-IN')}</h3></div>
-        <div style={{ display: 'flex', gap: 6, padding: '0 12px 8px' }}>
-        </div>
+        {inScope > 0 && <SearchBox value={q} onChange={setQ} placeholder="Search destination, code…" />}
         <div className="toolbar"><FilterChips value={scope}
           onChange={(k) => { setScope(k); setSel(null); setDetail(null) }} options={[
-            ['posted', 'Awaiting', null, 'Dispatched and waiting to be counted in'],
-            ['received', 'Received', null, 'Already accepted'],
-            ['all', 'All', null, 'Every transfer'],
-          ]} /></div>
-        {inScope > 0 && <SearchBox value={q} onChange={setQ} placeholder="Search destination, code…" />}
+            ['posted', 'Awaiting', icounts.posted || 0, 'Dispatched and waiting to be counted in'],
+            ['received', 'Received', icounts.received || 0, 'Already accepted'],
+            ['all', 'All', icounts.all || 0, 'Every transfer'],
+          ]} />
+          <FilterButton open={filtersOpen} onToggle={() => setFiltersOpen((o) => !o)} active={iActive} /></div>
+        <FilterPanel open={filtersOpen} active={iActive} onClear={() => setInf({ date_from: '', date_to: '' })}>
+          <DateField label="Dispatched from" value={inf.date_from} onChange={(v) => setInf((x) => ({ ...x, date_from: v }))} />
+          <DateField label="Dispatched to" value={inf.date_to} onChange={(v) => setInf((x) => ({ ...x, date_to: v }))} />
+        </FilterPanel>
         <div className="list">
           {inwPage.loading && inwPage.rows.length === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>Loading…</div>}
           {!inwPage.loading && inScope === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
             {scope === 'posted' ? 'Nothing in transit — dispatched transfers appear here to be received.' : 'Nothing here yet.'}</div>}
           {!inwPage.loading && inScope > 0 && inwPage.total === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
-            Nothing matches — clear the search.</div>}
+            Nothing matches. Try “All”, clear the search{iActive ? ' or clear the filters' : ''}.</div>}
           {inwPage.slice.map((o) => (
             <div key={o.id} className={'doc-row' + (sel === o.id ? ' sel' : '')} onClick={() => open(o.id)}>
               <div className="t">{o.to_destination || o.code}</div>
-              <div className="m"><span className={'badge ' + (o.status === 'received' ? 'confirmed' : 'review')}>
-                {o.status === 'received' ? 'received' : 'in transit'}</span>
+              <div className="m"><TransferBadge status={o.status} inbound />
                 <span>{o.code}</span><span style={{ marginLeft: 'auto' }}>{o.total_qty} units</span></div>
               {o.status === 'received' && o.shortfall > 0 && (
                 <div className="m"><span style={{ color: 'var(--danger)' }}>{o.shortfall} short</span></div>)}
@@ -4675,11 +4851,10 @@ function StockInward({ toast }) {
       {detail ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div className="editor">
-            <div style={{ display: 'flex', gap: 12, alignItems: 'baseline' }}>
-              <h2 style={{ margin: 0 }}>{detail.to_destination || detail.code}</h2>
-              <span className={'badge ' + (detail.status === 'received' ? 'confirmed' : 'review')}>
-                {detail.status === 'received' ? 'received' : 'in transit'}</span>
-            </div>
+            <BackRow onBack={() => { setSel(null); setDetail(null) }} to="the transfer list">
+              <h2>{detail.to_destination || detail.code}</h2>
+              <TransferBadge status={detail.status} inbound />
+            </BackRow>
             <div className="kv" style={{ margin: '12px 0 18px', gridTemplateColumns: '130px 1fr 130px 1fr' }}>
               <div className="k">Package</div><div className="mono">{detail.code}</div>
               <div className="k">Dispatched</div><div>{fmtDate(detail.date || detail.posted_at)}</div>
@@ -4777,10 +4952,18 @@ function Payments({ toast }) {
   const [payments, setPayments] = useState([])
   const [head, setHead] = useState({ date: '', mode: 'NEFT', ref_no: '', remarks: '' })
   const [q, setQ] = useState('')
+  const [scope, setScope] = useState('billed')
+  const [lq, setLq] = useState('')                  // search within the ledger
 
   const loadSuppliers = useCallback(() => api.listSuppliers().then(setSuppliers), [])
   useEffect(() => { loadSuppliers(); api.listPayments().then(setPayments) }, [loadSuppliers])
-  const payPage = usePaged(suppliers.filter((s) => matches(s, q, ['name', 'gstin'])), 50)
+  const billed = suppliers.filter((s) => s.document_count > 0).length
+  const payShown = suppliers
+    .filter((s) => scope === 'all' || (scope === 'billed') === (s.document_count > 0))
+    .filter((s) => matches(s, q, ['name', 'gstin']))
+  const payPage = usePaged(payShown, 50)
+  const selSupplier = suppliers.find((s) => s.id === sel)
+  const ledgerRows = (ledger?.rows || []).filter((r) => matches(r, lq, ['type', 'ref', 'detail', 'date']))
   const loadSupplier = (id) => {
     setSel(id)
     api.pendingBills(id).then((b) => {
@@ -4812,9 +4995,16 @@ function Payments({ toast }) {
   return (
     <div className="body">
       <Sidebar id="payables" label="Payables">
-        <div className="head"><h3>Suppliers · payables</h3></div>
+        <div className="head"><h3>Payables · {suppliers.length}</h3></div>
         <SearchBox value={q} onChange={setQ} placeholder="Search supplier, GSTIN…" />
+        <div className="toolbar"><FilterChips value={scope} onChange={setScope} options={[
+          ['billed', 'With bills', billed, 'Suppliers who have sent us at least one bill'],
+          ['unbilled', 'No bills', suppliers.length - billed, 'On the master, nothing billed yet'],
+          ['all', 'All', suppliers.length, 'Every supplier'],
+        ]} /></div>
         <div className="list">
+          {suppliers.length > 0 && payShown.length === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
+            Nothing matches. Try “All” or clear the search.</div>}
           {payPage.slice.map((s) => (
             <div key={s.id} className={'sup-row' + (sel === s.id ? ' sel' : '')} onClick={() => loadSupplier(s.id)}>
               <div className="t">{s.name}</div>
@@ -4827,6 +5017,10 @@ function Payments({ toast }) {
       {sel ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div className="editor">
+            <BackRow onBack={() => { setSel(null); setLedger(null); setBills([]); setLq('') }} to="the supplier list">
+              <h2>{selSupplier?.name || 'Supplier'}</h2>
+              {selSupplier?.gstin && <span className="small mono">{selSupplier.gstin}</span>}
+            </BackRow>
             {ledger && <div style={{ display: 'flex', gap: 14, marginBottom: 18 }}>
               <Stat label="Outstanding" value={'₹ ' + money(ledger.outstanding)} accent="money" />
               <Stat label="Pending bills" value={bills.length} accent="count" />
@@ -4864,10 +5058,18 @@ function Payments({ toast }) {
             </Section>
 
             {ledger && ledger.rows.length > 0 && <Section id="pay.ledger" title="Supplier ledger" summary={`${ledger.rows.length} row(s)`}>
+              <div className="toolbar" style={{ paddingTop: 0 }}>
+                <SearchBox value={lq} onChange={setLq} placeholder="Search type, reference, date…" />
+                {lq && <span className="small">{ledgerRows.length} of {ledger.rows.length} row(s)</span>}
+              </div>
+              <div className="tablewrap">
               <table className="items"><thead><tr><th>Date</th><th>Type</th><th>Ref</th>
                 <th style={{ textAlign: 'right' }}>Debit</th><th style={{ textAlign: 'right' }}>Credit</th>
                 <th style={{ textAlign: 'right' }}>Balance</th></tr></thead>
-                <tbody>{ledger.rows.map((r, i) => (
+                <tbody>{ledgerRows.length === 0 && (
+                  <tr><td colSpan={6} className="small" style={{ padding: 16, textAlign: 'center', color: 'var(--muted)' }}>
+                    Nothing matches. Clear the search.</td></tr>)}
+                  {ledgerRows.map((r, i) => (
                   <tr key={i}><td>{fmtDate(r.date)}</td><td>{r.type}</td>
                     <td className="mono">{r.ref}{r.detail ? <span className="small"> · {r.detail}</span> : ''}</td>
                     <td style={{ textAlign: 'right' }}>{r.debit ? money(r.debit) : ''}</td>
@@ -4875,12 +5077,12 @@ function Payments({ toast }) {
                     <td style={{ textAlign: 'right' }}><b>{money(r.balance)}</b></td></tr>
                 ))}</tbody>
               </table>
+              </div>
             </Section>}
           </div>
           <div className="actionbar">
             <div className="field" style={{ width: 120 }}><label>Mode</label>
-              <select value={head.mode} onChange={(e) => setHead({ ...head, mode: e.target.value })}
-                style={{ width: '100%', background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 7, padding: '7px' }}>
+              <select value={head.mode} onChange={(e) => setHead({ ...head, mode: e.target.value })}>
                 <option>NEFT</option><option>RTGS</option><option>Cash</option><option>Cheque</option></select></div>
             <div className="field" style={{ width: 140 }}><label>Ref / UTR</label><input value={head.ref_no} onChange={(e) => setHead({ ...head, ref_no: e.target.value })} /></div>
             <DateField label="Date" width={150} value={head.date} onChange={(v) => setHead({ ...head, date: v })} />
@@ -4912,10 +5114,21 @@ function Returns({ toast }) {
   // the server — every posted receipt at once was a table of tens of thousands.
   const [pq, setPq] = useState('')
   const pqd = useDebounced(pq)
+  const [pickFiltersOpen, setPickFiltersOpen] = useState(false)
+  const [pf, setPf] = useState(NO_INVOICE_FILTERS)
+  const pfd = useDebounced(pf)
+  const setPfField = (k) => (e) => setPf((x) => ({ ...x, [k]: e && e.target ? e.target.value : e }))
+  const pActive = countActive(pf)
   const pickPage = useServerPaged(({ limit, offset }) => (picking
-    ? api.purchasesPage({ limit, offset, q: pqd, status: 'posted' })
-    : Promise.resolve({ rows: [], total: 0 })), `${picking}|${pqd}`)
-  const openPicker = () => { setPq(''); setPicking(true); setDetail(null) }
+    ? api.purchasesPage({ limit, offset, q: pqd, status: 'posted', ...pfd })
+    : Promise.resolve({ rows: [], total: 0 })), `${picking}|${pqd}|${JSON.stringify(pfd)}`)
+  const openPicker = () => { setPq(''); setPf(NO_INVOICE_FILTERS); setPicking(true); setDetail(null) }
+  // ⛭ Filters on the debit-note list — who it is against and when it was raised
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [rf, setRf] = useState({ supplier: '', from: '', to: '' })
+  const setRfField = (k) => (e) => setRf((x) => ({ ...x, [k]: e && e.target ? e.target.value : e }))
+  const rActive = countActive(rf)
+  const retDay = (r) => String(r.date || r.created_at || '').slice(0, 10)
   // Received lines come back at 0 — how many go back is still a decision. Shortage
   // lines come back at the quantity counted at the dock, because that one isn't:
   // the pieces are missing and by how many was settled when the boxes were opened.
@@ -4943,6 +5156,9 @@ function Returns({ toast }) {
   }
   const editable = detail && detail.status !== 'posted'
   const shown = list.filter((r) => scope === 'all' || r.status === scope)
+    .filter((r) => !rf.supplier || r.supplier_name === rf.supplier)
+    .filter((r) => !rf.from || retDay(r) >= rf.from)
+    .filter((r) => !rf.to || (retDay(r) && retDay(r) <= rf.to))
     .filter((r) => matches(r, q, ['supplier_name', 'invoice_number', 'code', 'status']))
   const retPage = usePaged(shown, 50)
   const draftTotal = detail ? detail.lines.reduce((s, l) => s + (+qtys[l.id] || 0) * (l.rate || 0), 0) : 0
@@ -4958,11 +5174,25 @@ function Returns({ toast }) {
             ['draft', 'Draft', list.filter((r) => r.status === 'draft').length, 'Debit notes not yet posted'],
             ['posted', 'Posted', list.filter((r) => r.status === 'posted').length, 'Raised against the supplier'],
             ['all', 'All', list.length, 'Every debit note'],
-          ]} /></div>
+          ]} />
+          <FilterButton open={filtersOpen} onToggle={() => setFiltersOpen((o) => !o)} active={rActive} /></div>
+          <FilterPanel open={filtersOpen} active={rActive} onClear={() => setRf({ supplier: '', from: '', to: '' })}>
+            <FilterField label="Supplier">
+              <select value={rf.supplier} onChange={setRfField('supplier')}>
+                <option value="">Any supplier</option>
+                {[...new Set(list.map((r) => r.supplier_name).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+                  .map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </FilterField>
+            <DateField label="Raised from" value={rf.from} onChange={setRfField('from')} />
+            <DateField label="Raised to" value={rf.to} onChange={setRfField('to')} />
+          </FilterPanel>
         </>}
         <div className="list">
+          {list.length === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
+            No debit notes yet. Press “+ New” to return goods against an invoice.</div>}
           {list.length > 0 && shown.length === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
-            Nothing matches. Try “All” or clear the search.</div>}
+            Nothing matches. Try “All”, clear the search{rActive ? ' or clear the filters' : ''}.</div>}
           {retPage.slice.map((r) => (
             <div key={r.id} className={'doc-row' + (detail?.id === r.id && !picking ? ' sel' : '')} onClick={() => openReturn(r.id)}>
               <div className="t">{r.supplier_name}</div>
@@ -4976,11 +5206,26 @@ function Returns({ toast }) {
       </Sidebar>
       {picking ? (
         <div className="editor">
-          <h2 style={{ marginTop: 0 }}>New Purchase Return — pick a reference invoice</h2>
-          <SearchBox value={pq} onChange={setPq} placeholder="Search supplier, invoice, GRN no…" style={{ maxWidth: 360 }} />
+          <BackRow onBack={() => setPicking(false)} to="the debit-note list">
+            <h2>New Purchase Return — pick a reference invoice</h2></BackRow>
+          <div className="toolbar">
+            <SearchBox value={pq} onChange={setPq} placeholder="Search supplier, invoice, GRN no…" />
+            <FilterButton open={pickFiltersOpen} onToggle={() => setPickFiltersOpen((o) => !o)} active={pActive} />
+          </div>
+          <FilterPanel open={pickFiltersOpen} active={pActive} onClear={() => setPf(NO_INVOICE_FILTERS)}>
+            <FilterField label="Supplier">
+              <input value={pf.supplier} onChange={setPfField('supplier')} placeholder="Any supplier" />
+            </FilterField>
+            <DateField label="Invoice date from" value={pf.date_from} onChange={setPfField('date_from')} />
+            <DateField label="Invoice date to" value={pf.date_to} onChange={setPfField('date_to')} />
+            <FilterField label="Invoice number">
+              <input value={pf.invoice_no} onChange={setPfField('invoice_no')} placeholder="e.g. 40610" />
+            </FilterField>
+          </FilterPanel>
           {pickPage.loading && pickPage.rows.length === 0 && <div className="empty" style={{ marginTop: 20 }}>Loading…</div>}
           {!pickPage.loading && pickPage.total === 0 && <div className="empty" style={{ marginTop: 20 }}>
-            {pq ? 'No posted GRN matches — clear the search.' : 'No posted GRN to return against yet.'}</div>}
+            {pq || pActive ? 'Nothing matches. Clear the search or the filters.' : 'No posted GRN to return against yet.'}</div>}
+          <div className="tablewrap">
           <table className="items"><thead><tr><th>Supplier</th><th>Invoice</th><th>Date</th>
             <th style={{ textAlign: 'right' }}>Grand total</th>
             <th style={{ textAlign: 'right' }}>Short</th><th></th></tr></thead>
@@ -4999,14 +5244,15 @@ function Returns({ toast }) {
                   <button className="btn" style={{ padding: '3px 10px' }} onClick={() => startReturn(p.id)}>Return →</button></td></tr>
             ))}</tbody>
           </table>
+          </div>
           <Pager {...pickPage} noun="posted GRN" />
         </div>
       ) : detail ? (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div className="editor">
-            <div style={{ display: 'flex', gap: 12, alignItems: 'baseline' }}>
-              <h2 style={{ margin: 0 }}>{detail.code} · {detail.supplier_name}</h2>
-              <span className={'badge ' + (detail.status === 'posted' ? 'confirmed' : 'uploaded')}>{detail.status}</span></div>
+            <BackRow onBack={() => setDetail(null)} to="the debit-note list">
+              <h2>{detail.code} · {detail.supplier_name}</h2>
+              <span className={'badge ' + (detail.status === 'posted' ? 'confirmed' : 'uploaded')}>{detail.status}</span></BackRow>
             <div className="kv" style={{ margin: '12px 0 20px', gridTemplateColumns: '140px 1fr 140px 1fr' }}>
               <div className="k">Debit note vs</div><div className="mono">{detail.invoice_number}
                 {detail.grn_no ? <span className="small"> · GRN {detail.grn_no}</span> : null}</div>
@@ -5278,8 +5524,11 @@ function AskBar({ value, onChange, onAsk, busy, engine }) {
         <input value={value} onChange={(e) => onChange(e.target.value)}
           placeholder="Ask a question, or press 🎤 — “what did we buy last month”, “நிலுவை பாக்கி எவ்வளவு”"
           title="Ask in English or Tamil, typed or spoken. The question is routed to one of the reports on the left."
-          onKeyDown={(e) => { if (e.key === 'Enter' && value.trim()) onAsk() }} />
-        {value && <button className="askclear" title="Clear" onClick={() => onChange('')}>×</button>}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && value.trim()) onAsk()
+            if (e.key === 'Escape' && value) { e.preventDefault(); onChange('') }
+          }} />
+        {value && <button className="askclear" title="Clear the question (Esc)" onClick={() => onChange('')}>×</button>}
       </span>
       {/* Spoken words land in the same box, so voice is a way of filling this
           control rather than a second path through the feature. */}
@@ -5363,6 +5612,9 @@ function Reports() {
   // but without waiting on an effect once the catalogue is already held.
   const key = picked || cat[0]?.key || null
   const [q, setQ] = useState('')
+  // search the list of reports itself — there are forty-odd across the groups
+  const [listQ, setListQ] = useState('')
+  const rMatch = (name) => !listQ.trim() || String(name || '').toLowerCase().includes(listQ.trim().toLowerCase())
   const [filters, setFilters] = useState(memo.filters || {})   // the values behind a report's params
   const [filtersOpen, setFiltersOpen] = useState(false)
   // --- ask ---
@@ -5466,13 +5718,18 @@ function Reports() {
     <div className="body">
       <Sidebar id="reports" label="Reports">
         <div className="head"><h3>Reports · {cat.length + storeCount}</h3></div>
+        <SearchBox value={listQ} onChange={setListQ} placeholder="Search reports…" />
         <div className="list" style={{ padding: '6px 0' }}>
-          {order.filter((g) => grouped[g.key]?.length).map((g) => (
+          {listQ.trim() && !cat.some((r) => rMatch(r.name))
+            && !(store || []).some((g) => g.reports.some((r) => rMatch(r.label))) && (
+            <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>No report matches. Clear the search.</div>
+          )}
+          {order.filter((g) => (grouped[g.key] || []).some((r) => rMatch(r.name))).map((g) => (
             <div key={g.key}>
               <div style={{ padding: '10px 14px 4px', fontSize: 11, textTransform: 'uppercase', color: 'var(--muted)', letterSpacing: '.5px' }}>
-                {g.name} <span style={{ opacity: 0.6 }}>({grouped[g.key].length})</span>
+                {g.name} <span style={{ opacity: 0.6 }}>({grouped[g.key].filter((r) => rMatch(r.name)).length})</span>
               </div>
-              {grouped[g.key].map(r => (
+              {grouped[g.key].filter((r) => rMatch(r.name)).map(r => (
                 // A question nothing answered leaves no report on screen, so
                 // nothing in this list is highlighted either — a highlight with
                 // no table next to it reads as "this is what you are looking at".
@@ -5495,12 +5752,12 @@ function Reports() {
                 {!store && <div className="small" style={{ color: 'var(--muted)' }}>
                   Sign in to the Store to list its reports here</div>}
               </div>
-              {(store || []).map((g) => (
+              {(store || []).filter((g) => g.reports.some((r) => rMatch(r.label))).map((g) => (
                 <div key={g.key}>
                   <div style={{ padding: '10px 14px 4px', fontSize: 11, textTransform: 'uppercase', color: 'var(--muted)', letterSpacing: '.5px' }}>
-                    Store · {g.label} <span style={{ opacity: 0.6 }}>({g.reports.length})</span>
+                    Store · {g.label} <span style={{ opacity: 0.6 }}>({g.reports.filter((r) => rMatch(r.label)).length})</span>
                   </div>
-                  {g.reports.map((r) => (
+                  {g.reports.filter((r) => rMatch(r.label)).map((r) => (
                     <div key={r.key} className={'doc-row' + (storeKey === r.key ? ' sel' : '')}
                       style={{ padding: '8px 14px' }} onClick={() => pickStore(r.key)}
                       title={r.unavailable ? 'Listed for completeness — the Store has no record for this' : undefined}>
@@ -5546,7 +5803,7 @@ function Reports() {
                 ))}
               </div>
               <div className="spacer" style={{ flex: 1 }} />
-              <SearchBox value={q} onChange={setQ} placeholder="Search these rows…" style={{ width: 200 }} />
+              <SearchBox value={q} onChange={setQ} placeholder="Search these rows…" style={{ width: 220 }} />
               {/* Only the filters this report declares — see services/reports.run.
                   Behind the same ⛭ control every other screen uses, so a report
                   with a date range and a list with a status scope are the same
@@ -5629,6 +5886,7 @@ function Reports() {
 
 // ---------- vision settings modal ----------
 function VisionSettings({ onClose, onChanged, toast }) {
+  useEscape(onClose)
   const [st, setSt] = useState(null)
   const [key, setKey] = useState('')
   const [models, setModels] = useState([])
@@ -5671,7 +5929,7 @@ function VisionSettings({ onClose, onChanged, toast }) {
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>👁 Vision extraction</h2>
           <div className="spacer" style={{ flex: 1 }} />
-          <button className="btn" style={{ padding: '2px 9px' }} onClick={onClose}>×</button>
+          <CloseX onClick={onClose} what="vision settings" />
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '14px 0',
@@ -5978,7 +6236,7 @@ function LREntryForm({ editing, opts, lists, onDone, onCancel, toast, reloadOpts
   return (
     <div className="section">
       <h4>{editing ? `Edit entry ${editing.lr_entry_no || '#' + editing.id}` : 'New transport entry'}
-        <button className="h4btn" onClick={onCancel}>✕ close</button></h4>
+        <button className="h4btn" onClick={onCancel} title="Close the form without saving">× Close</button></h4>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))', gap: '0 28px' }}>
         {[LR_FORM_LEFT, LR_FORM_RIGHT].map((col, ci) => (
           <div key={ci} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 12px', alignContent: 'start' }}>
@@ -6067,7 +6325,7 @@ function LRSearchPanel({ onResults, onClear, toast, lists }) {
                   register page long before anybody made a master of them, so the
                   list has to guide without refusing what is not on it */}
               <input value={f[k] || ''} list={choices.length ? 'lrs-' + k : undefined}
-                placeholder={choices.length ? 'pick one, or type' : undefined}
+                placeholder={choices.length ? 'pick one, or type' : 'type any part of it'}
                 onChange={(e) => set(k, e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') run() }} />
               {choices.length > 0 && (
@@ -6509,8 +6767,16 @@ function PurchaseOrdersView({ toast }) {
       })).catch(() => {})
   }, [])
 
+  // ⛭ Filters — which supplier, and when the order was raised
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [pof, setPof] = useState({ supplier: '', from: '', to: '' })
+  const setPofField = (k) => (e) => setPof((x) => ({ ...x, [k]: e && e.target ? e.target.value : e }))
+  const poActive = countActive(pof)
   const shown = rows
     .filter((r) => status === 'all' || r.status === status)
+    .filter((r) => !pof.supplier || r.supplier_name === pof.supplier)
+    .filter((r) => !pof.from || (toISODate(r.po_date) || '') >= pof.from)
+    .filter((r) => !pof.to || ((toISODate(r.po_date) || '') && toISODate(r.po_date) <= pof.to))
     .filter((r) => matches(r, query, ['po_no', 'supplier_name', 'item', 'brand', 'purchaser']))
   const page = usePaged(shown, 25)
 
@@ -6580,6 +6846,12 @@ function PurchaseOrdersView({ toast }) {
       <div className="screenbody">
 
         {form && (
+          <BackRow onBack={() => { setForm(null); setExtracted(null) }} to="the order book">
+            <span className="small" style={{ color: 'var(--muted)' }}>
+              {form.id ? `Order ${form.po_no || ''}` : extracted ? 'Reviewing a read order' : 'New purchase order'}</span>
+          </BackRow>
+        )}
+        {form && (
           <POForm editing={form.id ? form : null} extracted={form.id ? null : extracted}
             lists={lists} opts={opts} toast={toast}
             onCancel={() => { setForm(null); setExtracted(null) }}
@@ -6587,9 +6859,9 @@ function PurchaseOrdersView({ toast }) {
         )}
 
         <Section id="po-list" title={`Order book · ${shown.length}`}>
-          <div className="toolbar" style={{ gap: 10 }}>
+          <div className="toolbar">
             <SearchBox value={query} onChange={setQuery}
-              placeholder="Search PO no, supplier, item…" />
+              placeholder="Search PO no, supplier, item, brand…" />
             <FilterChips value={status} onChange={setStatus} options={[
               ['all', 'All', rows.length, 'Every order'],
               ['draft', 'Draft', count('draft'), PO_STATUS_HINT.draft],
@@ -6597,13 +6869,25 @@ function PurchaseOrdersView({ toast }) {
               ['confirmed', 'Confirmed', count('confirmed'), PO_STATUS_HINT.confirmed],
               ['cancelled', 'Cancelled', count('cancelled'), PO_STATUS_HINT.cancelled],
             ]} />
+            <FilterButton open={filtersOpen} onToggle={() => setFiltersOpen((o) => !o)} active={poActive} />
           </div>
+          <FilterPanel open={filtersOpen} active={poActive} onClear={() => setPof({ supplier: '', from: '', to: '' })}>
+            <FilterField label="Supplier" width={220}>
+              <select value={pof.supplier} onChange={setPofField('supplier')}>
+                <option value="">Any supplier</option>
+                {[...new Set(rows.map((r) => r.supplier_name).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+                  .map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </FilterField>
+            <DateField label="Order date from" value={pof.from} onChange={setPofField('from')} />
+            <DateField label="Order date to" value={pof.to} onChange={setPofField('to')} />
+          </FilterPanel>
 
           {rows.length === 0 && <div className="empty" style={{ marginTop: 24 }}>
             No purchase orders yet. Click “New order” to raise the first one —
             goods are booked in against a confirmed order.</div>}
           {rows.length > 0 && shown.length === 0 && <div className="empty" style={{ marginTop: 24 }}>
-            Nothing matches. Try “All” or clear the search.</div>}
+            Nothing matches. Try “All”, clear the search{poActive ? ' or clear the filters' : ''}.</div>}
 
           {shown.length > 0 && (
             <div style={{ overflowX: 'auto' }}>
@@ -6735,6 +7019,7 @@ function PriceChanger({ toast, role }) {
   const [busy, setBusy] = useState(false)
   const [revisions, setRevisions] = useState([])
   const [open, setOpen] = useState(null)
+  useEscape(() => setOpen(null), !!open)
 
   // By RANK, not by name — `role === 'superadmin'` locked the Super Boss, who
   // outranks every one of these, out of the screen. See ROLE_RANK.
@@ -6857,16 +7142,21 @@ function PriceChanger({ toast, role }) {
             </div>
             <div className="field wide">
               <label>Search</label>
-              <input value={text} placeholder="description, SKU, barcode, design no"
+              <input value={text} placeholder="Search description, SKU, barcode, design no…"
+                title="Enter runs the search. Esc clears the box."
                 onChange={(e) => reselect(() => setText(e.target.value))}
-                onKeyDown={(e) => { if (e.key === 'Enter') search() }} />
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') search()
+                  if (e.key === 'Escape' && text) { e.preventDefault(); reselect(() => setText('')) }
+                }} />
             </div>
           </div>
           <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
             <button className="btn primary" disabled={busy} onClick={search}>Find products</button>
-            <button className="btn" onClick={() => reselect(() => {
-              setFilters({}); setText(''); setPicked(new Set()); setList(null)
-            })}>Clear</button>
+            <button className="btn" title="Remove every filter and the search"
+              onClick={() => reselect(() => {
+                setFilters({}); setText(''); setPicked(new Set()); setList(null)
+              })}>Clear all</button>
             {list && (
               <span className="small" style={{ color: 'var(--text-2)' }}>
                 {list.total} matching
@@ -7040,7 +7330,7 @@ function PriceChanger({ toast, role }) {
               <div className="modal-head">
                 <b>{open.number}</b>
                 <span className="badge">{open.product_count} item(s)</span>
-                <button className="modal-x" onClick={() => setOpen(null)}>×</button>
+                <CloseX onClick={() => setOpen(null)} what="this price change" />
               </div>
               <div className="modal-body">
                 <div className="small" style={{ color: 'var(--text-2)', marginBottom: 8 }}>
@@ -7109,7 +7399,11 @@ function StockAuditView({ toast }) {
   }, [loadPast])
 
   const shown = viewing || session
+  const [rq, setRq] = useState('')                    // search within the readings
   const rows = (shown?.scans || []).filter((s) => filter === 'all' || s.result === filter)
+    .filter((s) => matches(s, rq, ['code', 'product_name', 'sku', 'location', 'scanned_by']))
+  const rowPage = usePaged(rows, 100)
+  const pastPage = usePaged(past, 25)
 
   const start = async () => {
     setBusy(true)
@@ -7210,13 +7504,18 @@ function StockAuditView({ toast }) {
           </div>
         )}
 
+        {/* Outside the panel, so minimising the report cannot hide the way out */}
+        {viewing && (
+          <BackRow onBack={() => setViewing(null)}
+            to={session ? `the count in progress (${session.code})` : 'the audit screen'}>
+            <span className="small">Reading a closed count: <b>{viewing.code}</b></span>
+          </BackRow>
+        )}
         {shown && (
           <Section id="audit-report"
-            title={`${viewing ? viewing.code + ' · closed' : 'Running report'} · ${t.scanned || 0} scanned`}
-            actions={viewing
-              ? <button className="btn" onClick={() => setViewing(null)}>Back</button>
-              : null}>
+            title={`${viewing ? viewing.code + ' · closed' : 'Running report'} · ${t.scanned || 0} scanned`}>
             <div className="toolbar">
+              <SearchBox value={rq} onChange={setRq} placeholder="Search code, product, SKU, location…" />
               <FilterChips value={filter} onChange={setFilter} options={[
                 ['all', 'All', t.scanned || 0, 'Every reading in this count'],
                 ['available', 'Available', t.available || 0, 'Found on the shelf'],
@@ -7226,7 +7525,7 @@ function StockAuditView({ toast }) {
             </div>
             {rows.length === 0
               ? <div className="empty" style={{ marginTop: 20 }}>
-                  {t.scanned ? 'Nothing matches that filter.' : 'Nothing counted yet.'}</div>
+                  {t.scanned ? 'Nothing matches. Try “All” or clear the search.' : 'Nothing counted yet.'}</div>
               : (
                 <div style={{ overflowX: 'auto' }}>
                   <table className="items">
@@ -7241,7 +7540,7 @@ function StockAuditView({ toast }) {
                       {!viewing && <th style={{ width: 34 }}></th>}
                     </tr></thead>
                     <tbody>
-                      {rows.map((s) => (
+                      {rowPage.slice.map((s) => (
                         <tr key={s.id}>
                           <td><code>{s.code}</code>
                             {(s.times_seen || 1) > 1 && <span className="small"> · seen {s.times_seen}×</span>}</td>
@@ -7261,6 +7560,7 @@ function StockAuditView({ toast }) {
                   </table>
                 </div>
               )}
+            <Pager {...rowPage} noun="reading" />
           </Section>
         )}
 
@@ -7280,9 +7580,13 @@ function StockAuditView({ toast }) {
                     <th style={{ width: 90 }}>Status</th>
                   </tr></thead>
                   <tbody>
-                    {past.map((s) => (
+                    {pastPage.slice.map((s) => (
                       <tr key={s.id} style={{ cursor: 'pointer' }}
+                        title={s.status === 'open' ? 'The count in progress' : 'Read this closed count'}
                         onClick={async () => {
+                          // The open count is the live one above, scanner and all —
+                          // opening it as a "closed" read hid the scan box.
+                          if (session && s.id === session.id) { setViewing(null); return }
                           try { setViewing(await api.auditGet(s.id)) }
                           catch { toast('Could not open that count', 'err') }
                         }}>
@@ -7304,6 +7608,7 @@ function StockAuditView({ toast }) {
                 </table>
               </div>
             )}
+          <Pager {...pastPage} noun="count" />
         </Section>
       </div>
     </div>
@@ -7465,6 +7770,7 @@ function PhysicalAuditView({ toast, role }) {
   const [busy, setBusy] = useState(false)
   const [reason, setReason] = useState('')
   const [search, setSearch] = useState('')
+  const pastPage = usePaged(past, 25)
   const [sel, setSel] = useState(() => new Set())
   const box = useRef(null)
   const file = useRef(null)
@@ -7864,6 +8170,8 @@ function PhysicalAuditView({ toast, role }) {
               </p>
 
               <div className="toolbar">
+                {viewing && <BackButton onClick={() => setViewing(null)}
+                  to={audit ? `the count in progress (${audit.code})` : 'the audit screen'} />}
                 {open && (
                   <div className="field psascan">
                     <input ref={box} value={code} autoFocus
@@ -7874,10 +8182,7 @@ function PhysicalAuditView({ toast, role }) {
                   </div>
                 )}
                 <SearchBox value={search} onChange={setSearch}
-                  placeholder="Search these rows…" style={{ maxWidth: 240 }} />
-                <div style={{ flex: 1 }} />
-                {viewing && <button className="btn" onClick={() => setViewing(null)}>
-                  Back to the open count</button>}
+                  placeholder="Search these rows…" />
               </div>
 
               <div className="psagrid">
@@ -7966,8 +8271,9 @@ function PhysicalAuditView({ toast, role }) {
                 {rows.length === 0 && (
                   <div className="empty" style={{ margin: 30 }}>
                     {shown.lines.length === 0 ? 'This count has no rows.'
+                      : search.trim() ? 'Nothing matches. Clear the search.'
                       : filters.show_all
-                        ? 'Nothing matches those filters.'
+                        ? 'Nothing matches. Clear the filters.'
                         : 'Nothing counted yet. Scan a tag, type into a row, or tick '
                           + 'Show All Rows to work down the whole list.'}
                   </div>
@@ -8048,7 +8354,7 @@ function PhysicalAuditView({ toast, role }) {
                       <th>Reason</th>
                     </tr></thead>
                     <tbody>
-                      {past.map((a) => (
+                      {pastPage.slice.map((a) => (
                         <tr key={a.id} style={{ cursor: 'pointer' }}
                           title="Open this count"
                           onClick={async () => {
@@ -8077,6 +8383,7 @@ function PhysicalAuditView({ toast, role }) {
                   </table>
                 </div>
               )}
+            <Pager {...pastPage} noun="count" />
           </Section>
         </div>
       </div>
@@ -8096,17 +8403,47 @@ function PhysicalAuditView({ toast, role }) {
 // too). Opening one goes to its GRN.
 const NO_INVOICE_FILTERS = { date_from: '', date_to: '', invoice_no: '', supplier: '', grn_no: '' }
 
+// The Invoice Entry queue's own filters — applied to the documents already
+// loaded, so they answer at once. `uploaded_at` is ISO, so a date range is a
+// string comparison on its first ten characters.
+const NO_DOC_FILTERS = { supplier: '', from: '', to: '', entry: '', confidence: '',
+                         min_total: '', max_total: '' }
+function docMatchesFilters(d, f) {
+  if (f.supplier && !(d.supplier_name || '').toLowerCase().includes(f.supplier.toLowerCase())) return false
+  const day = String(d.uploaded_at || '').slice(0, 10)
+  if (f.from && (!day || day < f.from)) return false
+  if (f.to && (!day || day > f.to)) return false
+  if (f.entry === 'typed' && d.has_image !== false) return false
+  if (f.entry === 'scanned' && d.has_image === false) return false
+  if (f.confidence) {
+    // a typed bill has no reading to be sure of, so it matches no confidence band
+    if (d.confidence == null || d.has_image === false) return false
+    if (confClass(d.confidence) !== f.confidence) return false
+  }
+  const total = d.grand_total == null || d.grand_total === '' ? null : Number(d.grand_total)
+  if (f.min_total !== '' && (total == null || total < Number(f.min_total))) return false
+  if (f.max_total !== '' && (total == null || total > Number(f.max_total))) return false
+  return true
+}
+
 function InvoiceFinder({ onOpenGrn }) {
   const [q, setQ] = useState('')
   const qd = useDebounced(q)
   // one filter per field, each narrowing further; typed ones wait for a pause
   const [f, setF] = useState(NO_INVOICE_FILTERS)
   const fd = useDebounced(f)
-  const setField = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }))
-  const anyFilter = Object.values(f).some((v) => v.trim()) || q.trim()
+  const setField = (k) => (e) => setF((x) => ({ ...x, [k]: e && e.target ? e.target.value : e }))
+  // posted / draft / short — the same scope chips the GRN list carries
+  const [scope, setScope] = useState('all')
+  const [filtersOpen, setFiltersOpen] = useState(true)
+  const active = countActive(f)
   const grnPage = useServerPaged(({ limit, offset }) =>
-    api.purchasesPage({ limit, offset, q: qd, status: 'all', ...fd }),
-  `inv|${qd}|${JSON.stringify(fd)}`, 25)
+    api.purchasesPage({ limit, offset, q: qd, status: scope, ...fd }),
+  `inv|${qd}|${scope}|${JSON.stringify(fd)}`, 25)
+  const counts = grnPage.counts || {}
+  // the supplier box offers the master's names, and still takes any part of one
+  const [suppliers, setSuppliers] = useState([])
+  useEffect(() => { api.listSuppliers().then((r) => setSuppliers(r || [])).catch(() => {}) }, [])
   const [lr, setLr] = useState(null)             // LR entries naming it, when searching
   const lrText = (fd.invoice_no || qd).trim()
   useEffect(() => {
@@ -8117,6 +8454,7 @@ function InvoiceFinder({ onOpenGrn }) {
     return () => { live = false }
   }, [lrText, fd.supplier])
   const described = [
+    scope !== 'all' && ({ draft: 'still in draft', posted: 'posted', short: 'with a shortage claim' })[scope],
     qd.trim() && `matching “${qd.trim()}”`,
     fd.invoice_no.trim() && `invoice no “${fd.invoice_no.trim()}”`,
     fd.supplier.trim() && `supplier “${fd.supplier.trim()}”`,
@@ -8126,33 +8464,42 @@ function InvoiceFinder({ onOpenGrn }) {
   return (
     <div className="editor" style={{ flex: 1, overflow: 'auto' }}>
       <h2 style={{ marginTop: 0 }}>Find a saved invoice</h2>
-      <div className="small" style={{ color: 'var(--muted)', margin: '-6px 0 12px' }}>
+      <div className="small" style={{ color: 'var(--muted)', margin: '-6px 0 4px' }}>
         Every invoice booked in as a GRN — including those brought over from the old system.
         Search by invoice number, supplier or GRN number; open one to see its lines.
       </div>
-      <SearchBox value={q} onChange={setQ} style={{ maxWidth: 440 }}
-        placeholder="Quick search — invoice number, supplier or GRN no…" />
-      <div className="invfilters" style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-end', margin: '12px 0 4px' }}>
-        <label className="small" style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>Invoice date from
-          <input type="date" value={f.date_from} onChange={setField('date_from')} max={f.date_to || undefined} /></label>
-        <label className="small" style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>to
-          <input type="date" value={f.date_to} onChange={setField('date_to')} min={f.date_from || undefined} /></label>
-        <label className="small" style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>Invoice number
-          <input value={f.invoice_no} onChange={setField('invoice_no')} placeholder="e.g. 40610" style={{ width: 130 }} /></label>
-        <label className="small" style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>Supplier name
-          <input value={f.supplier} onChange={setField('supplier')} placeholder="e.g. Ramraj" style={{ width: 200 }} /></label>
-        <label className="small" style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>GRN number
-          <input value={f.grn_no} onChange={setField('grn_no')} placeholder="e.g. GRN15180" style={{ width: 130 }} /></label>
-        <button className="btn" disabled={!anyFilter} onClick={() => { setF(NO_INVOICE_FILTERS); setQ('') }}
-          title="Clear the search and every filter">Clear filters</button>
+      <div className="toolbar">
+        <SearchBox value={q} onChange={setQ}
+          placeholder="Search invoice no, supplier, GRN no…" />
+        <FilterChips value={scope} onChange={setScope} options={[
+          ['all', 'All', counts.all, 'Every saved invoice'],
+          ['posted', 'Posted', counts.posted, 'Received into stock'],
+          ['draft', 'Draft', counts.draft, 'GRN started, not posted yet'],
+          ['short', 'Short', counts.short, 'Goods billed but not all delivered — a shortage is claimed'],
+        ]} />
+        <FilterButton open={filtersOpen} onToggle={() => setFiltersOpen((o) => !o)} active={active} />
       </div>
+      <FilterPanel open={filtersOpen} active={active} onClear={() => setF(NO_INVOICE_FILTERS)}>
+        <DateField label="Invoice date from" value={f.date_from} onChange={setField('date_from')} width={170} />
+        <DateField label="Invoice date to" value={f.date_to} onChange={setField('date_to')} width={170} />
+        <FilterField label="Invoice number" width={150}>
+          <input value={f.invoice_no} onChange={setField('invoice_no')} placeholder="e.g. 40610" />
+        </FilterField>
+        <FilterField label="Supplier" width={220}>
+          <input list="invf-sups" value={f.supplier} onChange={setField('supplier')} placeholder="Any supplier" />
+          <datalist id="invf-sups">{suppliers.map((s) => <option key={s.id} value={s.name} />)}</datalist>
+        </FilterField>
+        <FilterField label="GRN number" width={150}>
+          <input value={f.grn_no} onChange={setField('grn_no')} placeholder="e.g. GRN15180" />
+        </FilterField>
+      </FilterPanel>
       <div className="small" style={{ margin: '10px 0' }}>
         {grnPage.loading ? 'Searching…'
           : `${grnPage.total.toLocaleString('en-IN')} invoice${grnPage.total === 1 ? '' : 's'}`
             + (described ? ` ${described}` : ' saved') + ', newest first'}
       </div>
       {!grnPage.loading && grnPage.total === 0 && (
-        <div className="empty" style={{ marginTop: 20 }}>No saved invoice matches. Try part of the number, or the supplier's name.</div>
+        <div className="empty" style={{ marginTop: 20 }}>No saved invoice matches. Try part of the number or the supplier's name, choose “All”, or clear the filters.</div>
       )}
       {grnPage.rows.length > 0 && (
         <div className="tablewrap">
@@ -8248,6 +8595,11 @@ function LREntryView({ toast }) {
 
   const [searching, setSearching] = useState(false)   // search panel open
   const [found, setFound] = useState(null)       // search results, null = not filtered
+  // Bumped to empty the panel's own fields whenever the results are dropped from
+  // outside it — a save, a delete, "Show all entries" — so the panel can never
+  // sit there holding filters that no longer describe the list under it.
+  const [searchKey, setSearchKey] = useState(0)
+  const clearSearch = () => { setFound(null); setSearchKey((k) => k + 1) }
   // the register, and the rows just read off a page — both grow without limit,
   // and both are read a screenful at a time
   // 25, matching the invoice's line-items table rather than the 50 this had:
@@ -8264,12 +8616,12 @@ function LREntryView({ toast }) {
   }
   const afterSave = (_row, keepOpen) => {
     refresh()
-    setFound(null)          // the saved row may not match the active filter — show the full list
+    clearSearch()           // the saved row may not match the active filter — show the full list
     if (!keepOpen) setForm(null)
   }
   const removeEntry = async (r) => {
     if (!window.confirm(`Delete entry ${r.lr_entry_no || '#' + r.id} (${r.supplier_name || 'no supplier'})?`)) return
-    try { await api.lrDelete(r.id); toast('Entry deleted', 'ok'); setForm(null); setFound(null); refresh() }
+    try { await api.lrDelete(r.id); toast('Entry deleted', 'ok'); setForm(null); clearSearch(); refresh() }
     catch (e) { toast(e.detail || 'Delete failed', 'err') }
   }
 
@@ -8338,10 +8690,15 @@ function LREntryView({ toast }) {
           control someone cannot reach, a clipped sentence is only a shorter one */}
       <div className="pagehead">
         <h2>LR Entry</h2>
-        <div style={{ flex: 1 }} />
-        <button className="btn" onClick={() => setSearching((s) => !s)}
-          title="Find entries by LR / invoice number, supplier, date, rack…">🔍 Search</button>
-        <button className="btn" onClick={openNew}>📄 New entry</button>
+        <div className="pagesub small">The transport register — consignments as they arrive</div>
+        {/* The same ⛭ Filters control every list carries. It stays open while a
+            search is narrowing the register: hiding the panel and keeping the
+            narrowed list is how a filtered register gets read as the whole one. */}
+        <FilterButton open={searching || !!found} active={found ? 1 : 0}
+          onToggle={() => { if (found) return; setSearching((s) => !s) }}
+          title={found ? 'The register is filtered — clear the filters to close this'
+            : 'Find entries by LR / invoice number, supplier, date, received or linked'} />
+        <button className="btn" onClick={openNew}>+ New entry</button>
         <label className="btn primary uploadbtn">{busy ? 'Reading…' : 'Import LR image / PDF'}
           <input type="file" accept="image/*,.pdf" onChange={onFile} disabled={busy} /></label>
       </div>
@@ -8350,12 +8707,15 @@ function LREntryView({ toast }) {
           <LREntryForm editing={form.id ? form : null} opts={opts} lists={lists}
             onDone={afterSave} onCancel={() => setForm(null)} toast={toast} reloadOpts={loadOpts} />
         )}
-        {searching && (
-          <LRSearchPanel toast={toast} lists={lists}
+        {(searching || found) && (
+          <LRSearchPanel key={searchKey} toast={toast} lists={lists}
             onResults={setFound} onClear={() => setFound(null)} />
         )}
         {found && (
           <div className="warnbox clean" style={{ marginBottom: 14 }}>
+            <BackRow onBack={clearSearch} title="Back to the full register — clears the search">
+              <b>Search results</b>
+            </BackRow>
             <h4 style={{ border: 'none', margin: 0 }}>
               {found.count} matching entr{found.count === 1 ? 'y' : 'ies'}
               {found.shown < found.count ? ` (showing ${found.shown})` : ''} · Σ pieces <b>{found.totals.qty}</b>
@@ -8560,6 +8920,9 @@ const OPTION_TABS = [
 
 function OptionList({ kind, title, blurb, fixed, values, reload, toast }) {
   const [adding, setAdding] = useState('')
+  const [q, setQ] = useState('')
+  const shown = values.filter((v) => !q || String(v).toLowerCase().includes(q.toLowerCase()))
+  const page = usePaged(shown, 50)
   const add = async () => {
     const v = adding.trim(); if (!v) return
     try { await api.addMasterOption(kind, v); setAdding(''); reload(); toast(`Added “${v}”`, 'ok') }
@@ -8572,24 +8935,32 @@ function OptionList({ kind, title, blurb, fixed, values, reload, toast }) {
   }
   return (
     <>
-      <h2 style={{ marginTop: 0 }}>{title}</h2>
+      {/* the title is the page band's (MasterPane) — not repeated here */}
       {!fixed && (
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14, maxWidth: 420 }}>
+        <div className="toolbar" style={{ paddingTop: 0, maxWidth: 420 }}>
           <input value={adding} onChange={(e) => setAdding(e.target.value)} placeholder={`Add to ${title}…`}
-            onKeyDown={(e) => { if (e.key === 'Enter') add() }}
-            style={{ flex: 1, background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 8, padding: '8px 10px' }} />
+            onKeyDown={(e) => { if (e.key === 'Enter') add() }} style={{ flex: 1 }} />
           <button className="btn primary" onClick={add}>Add</button>
         </div>
       )}
+      {values.length > 10 && (
+        <div className="toolbar" style={{ paddingTop: 0 }}>
+          <SearchBox value={q} onChange={setQ} placeholder={`Search ${title}…`} />
+        </div>
+      )}
       {values.length === 0 && <div className="empty">Nothing in this list yet.</div>}
-      {values.map((v) => (
+      {values.length > 0 && shown.length === 0 && <div className="empty" style={{ marginTop: 24 }}>
+        Nothing matches. Clear the search.</div>}
+      {page.slice.map((v) => (
         <div key={v} style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, padding: '11px 14px', marginBottom: 7, maxWidth: 420 }}>
           <span style={{ flex: 1 }}>{v}</span>
           {fixed
             ? <span className="small" style={{ color: 'var(--muted)' }}>fixed</span>
-            : <button className="btn" style={{ padding: '2px 8px' }} onClick={() => drop(v)}>×</button>}
+            : <button className="btn" style={{ padding: '2px 8px' }} onClick={() => drop(v)}
+                title={`Remove “${v}”`}>×</button>}
         </div>
       ))}
+      <Pager {...page} noun="value" style={{ maxWidth: 420 }} />
     </>
   )
 }
@@ -8652,7 +9023,6 @@ function UnitTypes({ toast }) {
   const inp = { background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 8, padding: '8px 10px' }
   return (
     <>
-      <h2 style={{ marginTop: 0 }}>Unit Types</h2>
       <div style={{ display: 'flex', gap: 8, margin: '14px 0', flexWrap: 'wrap', alignItems: 'center' }}>
         <input value={adding.code} onChange={(e) => setAdding({ ...adding, code: e.target.value })}
           placeholder="CODE" style={{ ...inp, width: 110, textTransform: 'uppercase' }} />
@@ -8687,7 +9057,7 @@ function UnitTypes({ toast }) {
         </tbody>
       </table>
 
-      <h2 style={{ marginTop: 28 }}>Which unit a product is</h2>
+      <h4 style={{ marginTop: 28 }}>Which unit a product is</h4>
       <div style={{ display: 'flex', gap: 8, margin: '14px 0', maxWidth: 620 }}>
         <input value={rule.pattern} onChange={(e) => setRule({ ...rule, pattern: e.target.value })}
           placeholder="wording in the description, e.g. pillow cover"
@@ -9084,10 +9454,14 @@ function MasterScreen({ mkey, onBack, toast }) {
   const [q, setQ] = useState('')
   const [form, setForm] = useState(null)          // null = list, {} = new, {id} = edit
   const [busy, setBusy] = useState(false)
-  const load = useCallback(() => api.masterRecords(mkey, q).then((r) => {
+  const [scope, setScope] = useState('all')       // active / inactive / all
+  // asks the server once per pause in typing, not once per keystroke
+  const qd = useDebounced(q)
+  const load = useCallback(() => api.masterRecords(mkey, qd).then((r) => {
     setList(r.records); setTotal(r.total ?? r.records.length)
-  }), [mkey, q])
-  const recPage = usePaged(list, 50)
+  }), [mkey, qd])
+  const scoped = list.filter((r) => scope === 'all' || (scope === 'active') === !!r.active)
+  const recPage = usePaged(scoped, 50)
   useEffect(() => { api.masterDefinition(mkey).then(setDef); setForm(null) }, [mkey])
   useEffect(() => { load() }, [load])
   // a settings master is one row, not a list — open it straight away
@@ -9095,7 +9469,12 @@ function MasterScreen({ mkey, onBack, toast }) {
     if (def?.singleton && form === null) setForm(list[0] ? { ...list[0] } : {})
   }, [def, list])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!def) return <div className="empty">Loading…</div>
+  if (!def) return (
+    <div className="screen">
+      <div className="pagehead"><BackButton onClick={onBack} to="all masters" /><h2>Masters</h2></div>
+      <div className="empty">Loading…</div>
+    </div>
+  )
   const data = form?.data || {}
   const setField = (k, v) => setForm({ ...form, data: { ...data, [k]: v } })
   // Several fields at once, from one dictated sentence. Applied in a single
@@ -9134,21 +9513,23 @@ function MasterScreen({ mkey, onBack, toast }) {
   return (
     <div className="screen">
       <div className="pagehead">
-        <button className="btn" onClick={onBack}>‹ Masters</button>
+        {/* One Back: from a record to this master's list, from the list (or a
+            one-row settings master) to all the masters. It replaces a "‹ Masters"
+            here and a "✕ Close" there, which were two words for one gesture. */}
+        {form !== null && !def.singleton
+          ? <BackButton onClick={() => setForm(null)} to={`the ${def.label} list`} />
+          : <BackButton onClick={onBack} to="all masters" />}
         <h2>{def.label}</h2>
         <span className="small pagesub">{def.sub}</span>
         <div style={{ flex: 1 }} />
         {!def.singleton && form === null && (
-          <button className="btn primary" onClick={blank}>📄 New {def.label}</button>
+          <button className="btn primary" onClick={blank}>+ New {def.label}</button>
         )}
         {/* Voice sits with the form's own actions, not in a settings screen: it
             is how this record gets filled in, and it is offered at the moment
             somebody is looking at 30 empty boxes. */}
         {form !== null && (
           <MasterDictate def={def} data={data} toast={toast} onFills={applyFills} />
-        )}
-        {form !== null && !def.singleton && (
-          <button className="btn" onClick={() => setForm(null)}>✕ Close</button>
         )}
       </div>
 
@@ -9200,15 +9581,24 @@ function MasterScreen({ mkey, onBack, toast }) {
         </>
       ) : (
         <>
-          <SearchBox value={q} onChange={setQ} placeholder={`Search ${def.label}…`} style={{ maxWidth: 320 }} />
-          <div className="small" style={{ margin: '10px 0', color: 'var(--muted)' }}>
+          <div className="toolbar">
+            <SearchBox value={q} onChange={setQ} placeholder={`Search ${def.label}…`} />
+            <FilterChips value={scope} onChange={setScope} options={[
+              ['all', 'All', list.length, 'Every record'],
+              ['active', 'Active', list.filter((r) => r.active).length, 'In use — offered in the dropdowns'],
+              ['inactive', 'Inactive', list.filter((r) => !r.active).length, 'Kept for history, no longer offered'],
+            ]} />
+          </div>
+          <div className="small" style={{ margin: '0 0 10px', color: 'var(--muted)' }}>
             {total > list.length
               ? <>Showing the newest {list.length} of {total.toLocaleString()} record(s) — search to narrow</>
               : <>{list.length} record(s)</>} · {def.groups.reduce((n, g) => n + g.fields.length, 0)} fields,
             {' '}{def.groups.reduce((n, g) => n + g.fields.filter((f) => f.req).length, 0)} mandatory
           </div>
-          {list.length === 0 && <div className="empty" style={{ marginTop: 30 }}>
-            Nothing in {def.label} yet — press <b>New {def.label}</b>.</div>}
+          {list.length === 0 && !q && <div className="empty" style={{ marginTop: 30 }}>
+            Nothing in {def.label} yet — press <b>+ New {def.label}</b>.</div>}
+          {(list.length > 0 || q) && scoped.length === 0 && <div className="empty" style={{ marginTop: 30 }}>
+            Nothing matches. Try “All” or clear the search.</div>}
           {recPage.slice.map((r) => (
             <div key={r.id} className="doc-row" onClick={() => setForm({ ...r })}
               style={{ background: 'var(--panel)', border: '1px solid var(--line)',
@@ -9260,7 +9650,7 @@ function MasterPane({ title, sub, onBack, children }) {
           bare text — the same screen furniture appearing and disappearing as
           you moved between modules. */}
       <div className="pagehead">
-        <button className="btn" onClick={onBack}>‹ Masters</button>
+        <BackButton onClick={onBack} to="all masters" />
         <h2>{title}</h2>
         {sub && <span className="small pagesub">{sub}</span>}
       </div>
@@ -9300,6 +9690,9 @@ function Masters({ toast }) {
   const [opts, setOpts] = useState({})
   const [q, setQ] = useState('')
   const [section, setSection] = useState('')
+  const [catFiltersOpen, setCatFiltersOpen] = useState(false)
+  const [hq, setHq] = useState('')                 // search across the hub's cards
+  const [pq, setPq] = useState('')                 // search within agents / transporters
   const loadOpts = useCallback(() => api.masterOptions().then(setOpts).catch(() => {}), [])
   useEffect(() => {
     api.masterList().then(setErp).catch(() => {})
@@ -9315,13 +9708,17 @@ function Masters({ toast }) {
     (!section || c.section === section)
     && (!q || c.name.toLowerCase().includes(q.toLowerCase()))) : []
   const catPage = usePaged(catShown, 100)
+  const people = open?.key === 'agents' ? agents : open?.key === 'transports' ? transports : []
+  const peopleShown = people.filter((r) => matches(r, pq, ['name', 'phone']))
+  const peoplePage = usePaged(peopleShown, 50)
 
   // one of the seventeen — the generic renderer handles all of them
   if (open?.kind === 'erp') {
     return <MasterScreen mkey={open.key} onBack={() => setOpen(null)} toast={toast} />
   }
 
-  const back = () => setOpen(null)
+  // Leaving a master forgets its search, so the next one opens on everything.
+  const back = () => { setOpen(null); setQ(''); setSection(''); setPq('') }
   const meta = BUILTIN_MASTERS.find(([k]) => k === open?.key)
   if (open?.kind === 'builtin') {
     const [key, label, sub, , note] = meta
@@ -9329,15 +9726,22 @@ function Masters({ toast }) {
       const shown = catShown
       return (
         <MasterPane title={label} sub={`${cats ? cats.count : 0} codes`} onBack={back}>
-          <div style={{ display: 'flex', gap: 10, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <select value={section} onChange={(e) => setSection(e.target.value)}
-              style={{ background: 'var(--panel-2)', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 8, padding: '8px' }}>
-              <option value="">All sections</option>
-              {(cats?.sections || []).map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-            <SearchBox value={q} onChange={setQ} placeholder="Search category…" style={{ width: 240 }} />
+          <div className="toolbar" style={{ paddingTop: 0 }}>
+            <SearchBox value={q} onChange={setQ} placeholder="Search category…" />
+            <FilterButton open={catFiltersOpen} onToggle={() => setCatFiltersOpen((o) => !o)}
+              active={section ? 1 : 0} />
             <span className="small" style={{ color: 'var(--muted)' }}>{shown.length} shown</span>
           </div>
+          <FilterPanel open={catFiltersOpen} active={section ? 1 : 0} onClear={() => setSection('')}>
+            <FilterField label="Section" width={220}>
+              <select value={section} onChange={(e) => setSection(e.target.value)}>
+                <option value="">All sections</option>
+                {(cats?.sections || []).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </FilterField>
+          </FilterPanel>
+          {cats && shown.length === 0 && <div className="empty" style={{ marginTop: 24 }}>
+            Nothing matches. Clear the search{section ? ' or the section filter' : ''}.</div>}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(230px, 100%), 1fr))', gap: 8 }}>
             {catPage.slice.map((c) => (
               <div key={c.id} style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, padding: '9px 12px' }}>
@@ -9357,11 +9761,20 @@ function Masters({ toast }) {
       const rows = key === 'agents' ? agents : transports
       return (
         <MasterPane title={label} sub={`${rows.length} on record`} onBack={back}>
-          {rows.length === 0 && <div className="empty" style={{ marginTop: 24 }}>None yet.</div>}
-          {rows.map((r) => (
+          {rows.length > 0 && (
+            <div className="toolbar" style={{ paddingTop: 0 }}>
+              <SearchBox value={pq} onChange={setPq} placeholder="Search name, phone…" />
+            </div>
+          )}
+          {rows.length === 0 && <div className="empty" style={{ marginTop: 24 }}>
+            None yet — they are added as invoices and LR pages name them.</div>}
+          {rows.length > 0 && peopleShown.length === 0 && <div className="empty" style={{ marginTop: 24 }}>
+            Nothing matches. Clear the search.</div>}
+          {peoplePage.slice.map((r) => (
             <div key={r.id} style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 8, padding: '11px 14px', marginBottom: 7, maxWidth: 520 }}>
               {r.name}{r.phone ? ' · ' + r.phone : ''}</div>
           ))}
+          <Pager {...peoplePage} noun={key === 'agents' ? 'agent' : 'transporter'} style={{ maxWidth: 520 }} />
         </MasterPane>
       )
     }
@@ -9380,6 +9793,9 @@ function Masters({ toast }) {
     : k === 'transports' ? transports.length
     : (opts[k] || []).length
   const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(258px, 100%), 1fr))', gap: 10 }
+  const hs = hq.trim().toLowerCase()
+  const erpShown = erp.filter((m) => !hs || `${m.label} ${m.sub || ''}`.toLowerCase().includes(hs))
+  const builtinShown = BUILTIN_MASTERS.filter(([, label, sub]) => !hs || `${label} ${sub || ''}`.toLowerCase().includes(hs))
 
   return (
     <div className="screen">
@@ -9390,9 +9806,14 @@ function Masters({ toast }) {
         </div>
       </div>
       <div className="screenbody">
-      <h5 className="masterhead" style={{ marginTop: 0 }}>ERP masters</h5>
+      <div className="toolbar" style={{ paddingTop: 0 }}>
+        <SearchBox value={hq} onChange={setHq} placeholder="Search masters…" />
+      </div>
+      {hq && !erpShown.length && !builtinShown.length && (
+        <div className="empty" style={{ marginTop: 24 }}>No master matches. Clear the search.</div>)}
+      {erpShown.length > 0 && <h5 className="masterhead" style={{ marginTop: 0 }}>ERP masters</h5>}
       <div style={grid}>
-        {erp.map((m, i) => (
+        {erpShown.map((m, i) => (
           <MasterCard key={m.key} n={m.count || i + 1} icon={m.icon} label={m.label} sub={m.sub}
             meta={`${m.fields} fields · ${m.required} required`
               + (m.grids.length ? ` · ${m.grids.length} grid` : '')
@@ -9403,9 +9824,9 @@ function Masters({ toast }) {
         ))}
       </div>
 
-      <h5 className="masterhead">In use by this app</h5>
+      {builtinShown.length > 0 && <h5 className="masterhead">In use by this app</h5>}
       <div style={grid}>
-        {BUILTIN_MASTERS.map(([key, label, sub, icon, note]) => (
+        {builtinShown.map(([key, label, sub, icon, note]) => (
           <MasterCard key={key} n={builtinCount(key) || '—'} icon={icon} label={label}
             sub={sub} note={note}
             onClick={() => setOpen({ kind: 'builtin', key })} />
@@ -10090,6 +10511,7 @@ function LabelDesigner({ toast, role }) {
       {/* CENTRE — the canvas */}
       <div className="lcanvaswrap">
         <div className="toolbar ltoolbar">
+          <BackButton onClick={close} to="the label templates" />
           <input value={draft.name} onChange={(e) => edit({ name: e.target.value }, { tag: 'name' })}
             placeholder="Template name" style={{ width: 196, fontWeight: 600 }} />
           <div className="segbar">
@@ -10113,7 +10535,6 @@ function LabelDesigner({ toast, role }) {
             <option value="">Sample data</option>
             {products.map((p) => <option key={p.id} value={p.id}>{p.sku} · {(p.name || p.description)?.slice(0, 40)}</option>)}
           </select>
-          <button className="btn" onClick={close}>Close</button>
           <button className="btn primary" onClick={save} disabled={!dirty}>
             {dirty ? 'Save template' : 'Saved'}</button>
         </div>
@@ -10375,7 +10796,16 @@ function LabelPrinting({ toast }) {
     ? Math.max(0.6, Math.min(8, (proofW - 12) / tpl.width_mm))
     : 8
 
-  const visible = products.filter((p) => matches(p, q, ['sku', 'description', 'size', 'color', 'category', 'supplier_name', 'barcode']))
+  // chips: what is selected / what can be printed; ⛭ Filters: supplier, category
+  const [scope, setScope] = useState('all')
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const [lf, setLf] = useState({ supplier: '', category: '' })
+  const lActive = countActive(lf)
+  const visible = products
+    .filter((p) => scope === 'all' || (scope === 'selected' ? picked[p.id] != null : p.can_print !== false))
+    .filter((p) => !lf.supplier || p.supplier_name === lf.supplier)
+    .filter((p) => !lf.category || p.category === lf.category)
+    .filter((p) => matches(p, q, ['sku', 'description', 'size', 'color', 'category', 'supplier_name', 'barcode']))
   const page = usePaged(visible, 50)
   const ids = Object.keys(picked).map(Number)
   // a per-piece run prints one label per garment, so its count is the live piece
@@ -10485,8 +10915,13 @@ function LabelPrinting({ toast }) {
         <div>
           <div className="toolbar">
             {/* supplier was always searchable here — it just never said so */}
-            <SearchBox value={q} onChange={setQ} placeholder="Search product / SKU / size / colour / supplier…"
-              style={{ width: 320 }} />
+            <SearchBox value={q} onChange={setQ} placeholder="Search product, SKU, size, colour, supplier…" />
+            <FilterChips value={scope} onChange={setScope} options={[
+              ['all', 'All', products.length, 'Every product in stock'],
+              ['printable', 'Can print', products.filter((p) => p.can_print !== false).length, 'Has what a label needs'],
+              ['selected', 'Selected', Object.keys(picked).length, 'Only the products ticked for this run'],
+            ]} />
+            <FilterButton open={filtersOpen} onToggle={() => setFiltersOpen((o) => !o)} active={lActive} />
             <div className="field" style={{ width: 280, margin: 0 }}><label>Template</label>
               <select value={tplId} onChange={(e) => setTplId(+e.target.value)}>
                 {templates.length === 0 && <option value={0}>No active template</option>}
@@ -10511,6 +10946,22 @@ function LabelPrinting({ toast }) {
             )}
             <button className="btn" onClick={() => setPicked({})} disabled={!ids.length}>Clear selection</button>
           </div>
+          <FilterPanel open={filtersOpen} active={lActive} onClear={() => setLf({ supplier: '', category: '' })}>
+            <FilterField label="Supplier" width={220}>
+              <select value={lf.supplier} onChange={(e) => setLf((x) => ({ ...x, supplier: e.target.value }))}>
+                <option value="">Any supplier</option>
+                {[...new Set(products.map((p) => p.supplier_name).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+                  .map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </FilterField>
+            <FilterField label="Category" width={220}>
+              <select value={lf.category} onChange={(e) => setLf((x) => ({ ...x, category: e.target.value }))}>
+                <option value="">Any category</option>
+                {[...new Set(products.map((p) => p.category).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+                  .map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </FilterField>
+          </FilterPanel>
 
           {perPiece && <div className="infobox" style={{ marginBottom: 12 }}>
             <b>{tpl.name}</b> prints one label per garment, each carrying that piece's own
@@ -10541,6 +10992,10 @@ function LabelPrinting({ toast }) {
               <th style={{ textAlign: 'right', width: 110 }}>{perPiece ? 'Pieces' : 'Labels'}</th>
             </tr></thead>
             <tbody>
+              {products.length > 0 && visible.length === 0 && (
+                <tr><td colSpan={8} className="small" style={{ padding: 20, textAlign: 'center', color: 'var(--muted)' }}>
+                  Nothing matches. Try “All”, clear the search{lActive ? ' or clear the filters' : ''}.</td></tr>
+              )}
               {page.slice.map((p) => {
                 const on = picked[p.id] != null
                 return (
@@ -10701,9 +11156,14 @@ function NotificationBell({ onOpen, tick }) {
 }
 
 function NotificationPanel({ go, user, toast, onClose, onChanged }) {
+  useEscape(onClose)
   const [feed, setFeed] = useState(null)
   const [tab, setTab] = useState('inbox')
   const [err, setErr] = useState('')
+  const [scope, setScope] = useState('all')       // all | unread | critical | warn | info
+  const notices = feed?.notices || []
+  const shownNotices = notices.filter((n) => scope === 'all'
+    || (scope === 'unread' ? n.unread : n.level === scope))
   useEffect(() => {
     api.notifications().then(setFeed)
       .catch((e) => setErr(e.status === 404 ? 'restart' : 'failed'))
@@ -10721,8 +11181,7 @@ function NotificationPanel({ go, user, toast, onClose, onChanged }) {
             <button className={'seg' + (tab === 'people' ? ' on' : '')} onClick={() => setTab('people')}
               title="Who is meant to be watching these, and on what number">People</button>
           </div>
-          <button className="btn" style={{ marginLeft: 'auto' }} onClick={onClose}
-            title="Close">✕</button>
+          <CloseX onClick={onClose} what="notifications" />
         </div>
         <div className="piece-body" style={{ maxHeight: '68vh', overflow: 'auto' }}>
           {err && <div className="warnbox" style={{ marginBottom: 12 }}>
@@ -10743,14 +11202,27 @@ function NotificationPanel({ go, user, toast, onClose, onChanged }) {
                 {feed.counts.unread > 0 && <button className="btn" style={{ marginLeft: 'auto' }}
                   onClick={() => apply(api.notificationsReadAll(user))}>Mark all read</button>}
               </div>
-              {feed.notices.map((n) => (
+              {notices.length > 0 && (
+                <div className="toolbar" style={{ paddingTop: 0 }}>
+                  <FilterChips value={scope} onChange={setScope} options={[
+                    ['all', 'All', notices.length, 'Every open notice'],
+                    ['unread', 'Unread', notices.filter((n) => n.unread).length, 'Not read by anyone yet'],
+                    ['critical', NOTIF_LEVEL.critical.label, notices.filter((n) => n.level === 'critical').length],
+                    ['warn', NOTIF_LEVEL.warn.label, notices.filter((n) => n.level === 'warn').length],
+                    ['info', NOTIF_LEVEL.info.label, notices.filter((n) => n.level === 'info').length],
+                  ]} />
+                </div>
+              )}
+              {notices.length > 0 && !shownNotices.length && <div className="empty" style={{ marginTop: 20 }}>
+                Nothing matches. Try “All”.</div>}
+              {shownNotices.map((n) => (
                 <NoticeRow key={n.key} n={n}
                   onOpen={(x) => { onClose(); go(x.module) }}
                   onRead={(x) => apply(api.notificationsRead([x.key], user))}
                   onMute={(x) => apply(api.notificationMute(x.key, true, user))} />
               ))}
               {!feed.notices.length && <div className="empty" style={{ marginTop: 20 }}>
-                Nothing open. Notices appear here the moment a queue stops being empty.</div>}
+                Notices appear here the moment a queue stops being empty.</div>}
               <MutedList onChanged={(r) => { setFeed(r); onChanged() }} user={user} />
             </>
           ))}
@@ -11095,12 +11567,14 @@ function DsRegister({ toast, status, setStatus, onChanged }) {
   const [actions, setActions] = useState({})       // product_id → chosen action
   const [adding, setAdding] = useState(false)      // the "add to clearance" dialog
 
+  // asks the server once per pause in typing, not once per keystroke
+  const qd = useDebounced(q)
   const load = useCallback(() => {
     setBusy(true)
-    return api.deadStock({ q, status, ...f })
+    return api.deadStock({ q: qd, status, ...f })
       .then(setData).catch((e) => toast(e.message || 'Could not read the register', 'err'))
       .finally(() => setBusy(false))
-  }, [q, status, f, toast])
+  }, [qd, status, f, toast])
   useEffect(() => { load() }, [load])
 
   const rows = data?.rows || []
@@ -11120,14 +11594,16 @@ function DsRegister({ toast, status, setStatus, onChanged }) {
     cost: chosen.reduce((a, r) => a + r.stock_value, 0),
     expected: chosen.reduce((a, r) => a + r.expected_realisation, 0),
   }
-  const active = Object.values(f).filter(Boolean).length + (q ? 1 : 0)
+  // Filters only — the search is its own control and clears itself (Esc / ×),
+  // the same split every other list keeps.
+  const active = Object.values(f).filter(Boolean).length
 
   return (
     <>
       <Section id="ds-register" title="Dead Stock Register"
         summary={data ? `${rows.length} line(s)` : 'reading…'}
         actions={<>
-          <SearchBox value={q} onChange={setQ} placeholder="SKU, product, category, supplier…" />
+          <SearchBox value={q} onChange={setQ} placeholder="Search SKU, product, category, supplier…" />
           <FilterButton open={open} onToggle={() => setOpen((o) => !o)} active={active} />
         </>}>
         <div className="toolbar" style={{ marginBottom: 10 }}>
@@ -11140,8 +11616,8 @@ function DsRegister({ toast, status, setStatus, onChanged }) {
           ]} />
         </div>
         <FilterPanel open={open} active={active} onClear={() => {
-          setQ(''); setF({ bucket: '', category: '', supplier: '', size: '', min_value: '', min_qty: '' })
-        }} onApply={load} hint="Narrow the register, then select the lines to clear.">
+          setF({ bucket: '', category: '', supplier: '', size: '', min_value: '', min_qty: '' })
+        }} hint="Narrow the register, then select the lines to clear.">
           <div><label>Age band</label>
             <select value={f.bucket} onChange={(e) => setF({ ...f, bucket: e.target.value })}>
               <option value="">Any</option>
@@ -11175,7 +11651,7 @@ function DsRegister({ toast, status, setStatus, onChanged }) {
           <div className="empty" style={{ marginTop: 30 }}>
             {status === 'dead'
               ? `Nothing has been still for ${data.rules.dead_after_days}+ days. Try “All stock” to see what is moving.`
-              : 'Nothing matches these filters.'}
+              : 'Nothing matches. Clear the filters.'}
           </div>
         )}
         {rows.length > 0 && (
@@ -11271,6 +11747,7 @@ const DS_ACTIONS = ['Clear Now', 'Markdown', 'Bundle', 'Promotional Sale',
 // onto a new one. Two ways in, because a clearance is built over a morning, not
 // in one pass of the register.
 function DsAddToClearance({ rows, actions, onClose, onDone, toast }) {
+  useEscape(onClose)
   const [drafts, setDrafts] = useState([])
   const [target, setTarget] = useState('new')
   const [name, setName] = useState(() => {
@@ -11307,7 +11784,7 @@ function DsAddToClearance({ rows, actions, onClose, onDone, toast }) {
     <div className="piece-wrap" onClick={onClose}>
       <div className="piece-card" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
         <div className="piece-head"><b>Add to a clearance worksheet</b>
-          <button className="btn" style={{ marginLeft: 'auto' }} onClick={onClose}>✕</button></div>
+          <CloseX onClick={onClose} what="this dialog" /></div>
         <div className="piece-body">
           <div className="small" style={{ color: 'var(--text-2)', marginBottom: 12 }}>
             {rows.length} line(s) · {Math.round(totals.qty * 1000) / 1000} pcs ·
@@ -11347,10 +11824,16 @@ function DsWorksheets({ toast }) {
   const [list, setList] = useState([])
   const [open, setOpen] = useState(null)          // the campaign being read
   const [busy, setBusy] = useState(false)
+  const [q, setQ] = useState('')
+  const [scope, setScope] = useState('all')
   const load = useCallback(() => {
     setBusy(true)
     return api.clearanceList('all').then(setList).catch(() => {}).finally(() => setBusy(false))
   }, [])
+  const nOf = (st) => list.filter((c) => c.status === st).length
+  const sheets = list.filter((c) => scope === 'all' || c.status === scope)
+    .filter((c) => matches(c, q, ['name', 'note', 'status']))
+  const sheetPage = usePaged(sheets, 25)
   useEffect(() => { load() }, [load])
 
   const openOne = async (id) => {
@@ -11378,9 +11861,13 @@ function DsWorksheets({ toast }) {
   if (open) {
     const t = open.totals
     return (
+      <>
+      <BackRow onBack={() => { setOpen(null); load() }} to="all clearance worksheets">
+        <span className="small">Worksheet: <b>{open.name}</b></span>
+      </BackRow>
       <Section id="ds-sheet" title={open.name}
         summary={`${open.status} · ${open.line_count} line(s)`}
-        actions={<button className="btn" onClick={() => { setOpen(null); load() }}>‹ All worksheets</button>}>
+        >
         <div className="dgrid" style={{ marginBottom: 14 }}>
           <DashTile label="Products" value={t.qty + ' pcs'} accent="stock" sub={`${open.line_count} line(s) in the campaign`} />
           <DashTile label="Stock cost" value={rupees(t.stock_cost)} accent="money" sub="what these pieces cost us" />
@@ -11451,6 +11938,7 @@ function DsWorksheets({ toast }) {
         {!open.lines?.length && <div className="empty" style={{ marginTop: 24 }}>
           No lines yet — open the Register, select what to clear and add it here.</div>}
       </Section>
+      </>
     )
   }
 
@@ -11463,13 +11951,27 @@ function DsWorksheets({ toast }) {
         </div>
       )}
       {list.length > 0 && (
+        <div className="toolbar" style={{ paddingTop: 0 }}>
+          <SearchBox value={q} onChange={setQ} placeholder="Search campaign, note…" />
+          <FilterChips value={scope} onChange={setScope} options={[
+            ['all', 'All', list.length, 'Every worksheet'],
+            ['draft', 'Draft', nOf('draft'), 'Being put together — nothing on sale yet'],
+            ['active', 'Active', nOf('active'), 'The clearance prices are live'],
+            ['closed', 'Closed', nOf('closed'), 'Finished — kept for the results'],
+          ]} />
+        </div>
+      )}
+      {list.length > 0 && sheets.length === 0 && (
+        <div className="empty" style={{ marginTop: 24 }}>Nothing matches. Try “All” or clear the search.</div>
+      )}
+      {sheets.length > 0 && (
         <div className="tablewrap">
           <table className="items">
             <thead><tr><th>Campaign</th><th>Status</th><th>Period</th>
               <th className="num">Lines</th><th className="num">Pcs</th><th className="num">Stock cost</th>
               <th className="num">Expected</th><th className="num">Sold</th>
               <th className="num">Realised</th><th className="num">Sell-through</th><th></th></tr></thead>
-            <tbody>{list.map((c) => (
+            <tbody>{sheetPage.slice.map((c) => (
               <tr key={c.id} style={{ cursor: 'pointer' }} onClick={() => openOne(c.id)}>
                 <td><b>{c.name}</b>{c.note && <div className="cellsub">{c.note}</div>}</td>
                 <td><span className={'badge ' + (c.status === 'closed' ? 'posted' : c.status === 'active' ? 'confirmed' : 'draft')}>{c.status}</span></td>
@@ -11481,13 +11983,14 @@ function DsWorksheets({ toast }) {
                 <td className="num">{c.totals.sold_qty}</td>
                 <td className="num">{rupees(c.totals.actual_realisation)}</td>
                 <td className="num">{c.totals.sell_through_pct == null ? '—' : c.totals.sell_through_pct + '%'}</td>
-                <td><button className="btn" style={{ padding: '2px 7px' }}
+                <td><button className="btn" style={{ padding: '2px 7px' }} title="Delete this worksheet"
                   onClick={(e) => { e.stopPropagation(); remove(c) }}>×</button></td>
               </tr>
             ))}</tbody>
           </table>
         </div>
       )}
+      <Pager {...sheetPage} noun="worksheet" />
     </Section>
   )
 }
@@ -11948,9 +12451,17 @@ function ItemLocator({ toast }) {
             <input ref={box} value={code} style={{ flex: 1, fontSize: 15 }}
               placeholder="Product QR, piece code, carton label, barcode or SKU"
               onChange={(e) => setCode(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') look() }} />
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') look()
+                if (e.key === 'Escape' && code) { e.preventDefault(); setCode('') }
+              }} />
             <button className="btn primary" disabled={busy || !code.trim()}
               onClick={look}>{busy ? 'Looking…' : 'Go'}</button>
+            {/* A result stays up until the next scan; this clears it and puts the
+                cursor back in the box, ready for the next tag. */}
+            {res && <button className="btn" title="Clear this result and scan another"
+              onClick={() => { setRes(null); setCode(''); box.current && box.current.focus() }}>
+              New lookup</button>}
           </div>
         </div>
         {err && <div className="empty" style={{ margin: '10px 0' }}>{err}</div>}
@@ -12202,6 +12713,7 @@ const ROLE_HELP = {
 //      "unrestricted", and it is what every existing account starts as.
 // ==========================================================================
 function AccessEditor({ user, catalog, onSave, onClose, toast }) {
+  useEscape(onClose)
   const [map, setMap] = useState(() => ({ ...(user.permissions?.screens || {}) }))
   const [data, setData] = useState(() => [...(user.permissions?.data || [])])
   // Which buildings this account may work inside. Empty means every one of
@@ -12292,7 +12804,7 @@ function AccessEditor({ user, catalog, onSave, onClose, toast }) {
         <div className="modal-head">
           <b>Access — {user.username}</b>
           <span className={'badge role-' + user.role}>{user.role_label}</span>
-          <button className="modal-x" onClick={onClose}>×</button>
+          <CloseX onClick={onClose} what="the access editor" />
         </div>
         <div className="modal-body">
           {!screens.length && (
@@ -12447,6 +12959,15 @@ function Users({ toast, me }) {
   const [err, setErr] = useState('')
   const blank = { username: '', password: '', role: 'user', full_name: '' }
   const [form, setForm] = useState(blank)
+  // search · active chips · ⛭ role filter — the same three every list carries
+  const [q, setQ] = useState('')
+  const [scope, setScope] = useState('all')
+  const [roleF, setRoleF] = useState('')
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const shownUsers = rows
+    .filter((u) => scope === 'all' || (scope === 'active') === !!u.active)
+    .filter((u) => !roleF || u.role === roleF)
+    .filter((u) => matches(u, q, ['username', 'full_name', 'role']))
 
   const load = useCallback(() => {
     setBusy(true)
@@ -12537,7 +13058,29 @@ function Users({ toast, me }) {
         {err && <div className="empty" style={{ margin: '10px 0' }}>{err}</div>}
         {busy && !rows.length && <div className="empty" style={{ margin: '10px 0' }}>Loading…</div>}
 
-        {rows.length > 0 && (
+        {rows.length > 0 && <>
+          <div className="toolbar">
+            <SearchBox value={q} onChange={setQ} placeholder="Search username, name…" />
+            <FilterChips value={scope} onChange={setScope} options={[
+              ['all', 'All', rows.length, 'Every account'],
+              ['active', 'Active', rows.filter((u) => u.active).length, 'Can sign in'],
+              ['inactive', 'Deactivated', rows.filter((u) => !u.active).length, 'Kept for the record, cannot sign in'],
+            ]} />
+            <FilterButton open={filtersOpen} onToggle={() => setFiltersOpen((o) => !o)} active={roleF ? 1 : 0} />
+          </div>
+          <FilterPanel open={filtersOpen} active={roleF ? 1 : 0} onClear={() => setRoleF('')}>
+            <FilterField label="Role">
+              <select value={roleF} onChange={(e) => setRoleF(e.target.value)}>
+                <option value="">Any role</option>
+                {[...new Set(rows.map((u) => u.role).filter(Boolean))]
+                  .map((r) => <option key={r} value={r}>{ROLE_LABEL[r] || r}</option>)}
+              </select>
+            </FilterField>
+          </FilterPanel>
+          {shownUsers.length === 0 && <div className="empty" style={{ margin: '10px 0' }}>
+            Nothing matches. Try “All”, clear the search{roleF ? ' or the role filter' : ''}.</div>}
+          </>}
+        {shownUsers.length > 0 && (
           <div className="tablewrap">
             <table className="items">
               <thead><tr>
@@ -12545,7 +13088,7 @@ function Users({ toast, me }) {
                 <th style={{ width: 100 }}>Last signed in</th><th style={{ width: 90 }}>Added</th>
                 <th style={{ width: 200 }}></th>
               </tr></thead>
-              <tbody>{rows.map((u) => (
+              <tbody>{shownUsers.map((u) => (
                 <tr key={u.id} style={u.active ? undefined : { opacity: 0.55 }}>
                   <td><b>{u.username}</b>{isMe(u) && <span className="small" style={{ color: 'var(--text-2)' }}> · you</span>}</td>
                   <td className="small">{u.full_name || '—'}</td>
@@ -12645,6 +13188,7 @@ function Users({ toast, me }) {
 
 // The one account action everybody has, whatever their role.
 function ChangePassword({ onClose, toast }) {
+  useEscape(onClose)
   const [cur, setCur] = useState('')
   const [next, setNext] = useState('')
   const [again, setAgain] = useState('')
@@ -12672,7 +13216,7 @@ function ChangePassword({ onClose, toast }) {
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>Change password</h2>
           <div style={{ flex: 1 }} />
-          <button className="btn" style={{ padding: '2px 9px' }} onClick={onClose}>×</button>
+          <CloseX onClick={onClose} what="change password" />
         </div>
         <form onSubmit={save}>
           <div className="field"><label>Current password</label>
@@ -12871,6 +13415,7 @@ function LocField({ label, hint, error, wide, children }) {
 //  and putting those through a seventeen-field form would mean hiding most of
 //  it and asking for an address nobody could answer.
 function FloorEditor({ init, stores, onSave, onClose }) {
+  useEscape(onClose)
   const [f, setF] = useState(() => ({
     name: init?.name || '',
     prefix: init?.prefix || '',
@@ -12895,7 +13440,7 @@ function FloorEditor({ init, stores, onSave, onClose }) {
         <div className="modal-head">
           <b>{`${init?.id ? 'Edit' : 'New'} floor`}</b>
           <span className="badge">Floor</span>
-          <button className="modal-x" onClick={onClose}>×</button>
+          <CloseX onClick={onClose} what="the floor editor" />
         </div>
         <div className="modal-body">
           <div className="formsec">
@@ -12953,6 +13498,7 @@ function FloorEditor({ init, stores, onSave, onClose }) {
 }
 
 function LocationEditor({ init, kind, stores, floors, warehouses, catalogues, options, onSave, onClose }) {
+  useEscape(onClose)
   const [f, setF] = useState(() => ({
     name: init?.name || '', code: init?.code || '',
     // Which storey a till stands on. Blank means it is on none, which is a real
@@ -13011,7 +13557,7 @@ function LocationEditor({ init, kind, stores, floors, warehouses, catalogues, op
           <b>{`${init?.id ? 'Edit' : 'New'} ${LOC_TITLE[kind] || 'location'}`}</b>
           <span className="badge">{label}</span>
           {init?.code && <span className="loccode">{init.code}</span>}
-          <button className="modal-x" onClick={onClose}>×</button>
+          <CloseX onClick={onClose} what="the editor" />
         </div>
 
         <div className="modal-body">
@@ -13221,12 +13767,39 @@ function LocationEditor({ init, kind, stores, floors, warehouses, catalogues, op
   )
 }
 
+// The Locations tree, narrowed: a place is kept when it matches the search or
+// anything under it does — a till found by name must still be seen under its
+// store and warehouse, or it is a name with nowhere attached. A matching parent
+// keeps its whole branch. `openOnly` drops closed places at every level.
+function pruneLocations(tree, q, openOnly) {
+  const s = q.trim().toLowerCase()
+  const hit = (n) => !s || [n.name, n.code, n.gstin, n.city].some((v) => String(v || '').toLowerCase().includes(s))
+  const live = (n) => !openOnly || n.active !== false
+  const keepAll = (n) => ({
+    ...n,
+    stores: (n.stores || []).filter(live).map(keepAll),
+    floors: (n.floors || []).filter(live).map(keepAll),
+    terminals: (n.terminals || []).filter(live).map(keepAll),
+  })
+  const walk = (n) => {
+    if (!live(n)) return null
+    if (hit(n)) return keepAll(n)
+    const stores = (n.stores || []).map(walk).filter(Boolean)
+    const floors = (n.floors || []).map(walk).filter(Boolean)
+    const terminals = (n.terminals || []).map(walk).filter(Boolean)
+    return stores.length || floors.length || terminals.length ? { ...n, stores, floors, terminals } : null
+  }
+  return (tree || []).map(walk).filter(Boolean)
+}
+
 function Locations({ toast }) {
   const [tree, setTree] = useState(null)
   const [err, setErr] = useState(null)
   const [edit, setEdit] = useState(null)     // {kind, init}
   const [catalogues, setCatalogues] = useState([])
   const [options, setOptions] = useState(null)
+  const [q, setQ] = useState('')
+  const [scope, setScope] = useState('all')      // all | open
 
   const load = useCallback(() => api.locationTree()
     .then((r) => { setTree(r.warehouses || []); setErr(null) })
@@ -13242,6 +13815,7 @@ function Locations({ toast }) {
   }, [])
 
   const warehouses = (tree || []).filter((w) => !w.unassigned)
+  const shownTree = pruneLocations(tree, q, scope === 'open')
   const allStores = (tree || []).flatMap((w) => w.stores || [])
   // Flattened for the till editor's floor picker, which narrows to the store
   // being chosen — a till can only stand on a floor of its own building.
@@ -13351,12 +13925,24 @@ function Locations({ toast }) {
           deleting is refused once anything is filed under it.
         </div>
 
+        {tree && tree.length > 0 && (
+          <div className="toolbar" style={{ paddingTop: 0 }}>
+            <SearchBox value={q} onChange={setQ} placeholder="Search warehouse, store, floor, till, code…" />
+            <FilterChips value={scope} onChange={setScope} options={[
+              ['all', 'All', null, 'Open and closed places'],
+              ['open', 'Open only', null, 'Hide the places that have been closed'],
+            ]} />
+          </div>
+        )}
         {tree && tree.length === 0 && (
           <div className="empty" style={{ marginTop: 50 }}>
             No warehouses yet. Add one, then the stores it supplies.</div>
         )}
+        {tree && tree.length > 0 && shownTree.length === 0 && (
+          <div className="empty" style={{ marginTop: 30 }}>Nothing matches. Try “All” or clear the search.</div>
+        )}
 
-        {(tree || []).map((w) => (
+        {shownTree.map((w) => (
           <LocationRow key={w.id ?? 'orphan'} node={w} kind="warehouse"
             onAdd={w.unassigned ? null : () => setEdit({ kind: 'store', init: { warehouse_id: w.id } })}
             onEdit={w.unassigned ? null : () => setEdit({ kind: 'warehouse', init: w })}
@@ -13770,8 +14356,11 @@ function AskAnything({ go, big, placeholder, seed }) {
           <input value={q} onChange={(e) => setQ(e.target.value)}
             placeholder={placeholder || 'Ask anything — press 🎤 and say “today’s total invoices” — or paste a GRN, bill or QR code'}
             title="Speak it or type it, in English or Tamil. A code pasted here is tracked end to end."
-            onKeyDown={(e) => { if (e.key === 'Enter' && q.trim()) run() }} />
-          {q && <button className="askclear" title="Clear" onClick={() => { setQ(''); setAns(null) }}>×</button>}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && q.trim()) run()
+              if (e.key === 'Escape' && q) { e.preventDefault(); setQ(''); setAns(null) }
+            }} />
+          {q && <button className="askclear" title="Clear the question (Esc)" onClick={() => { setQ(''); setAns(null) }}>×</button>}
         </span>
         <VoiceButton onInterim={setQ} onSpoken={(t) => { spoken.current = true; run(t) }} disabled={busy} />
         <button className="btn primary" disabled={busy || !q.trim()} onClick={() => run()}>
@@ -14004,7 +14593,7 @@ function CommandCenter({ go, toast, user, role, onEnter }) {
         <input type="date" value={day} max={ov?.day} style={{ width: 150 }}
           title="Look at another business day" onChange={(e) => setDay(e.target.value)} />
         {day && <button className="btn" onClick={() => setDay('')}>Today</button>}
-        <button className="btn" onClick={() => load().catch(() => {})} disabled={busy}>{busy ? 'Reading…' : 'Refresh'}</button>
+        <button className="btn" onClick={() => load().catch(() => {})} disabled={busy}>{busy ? 'Reading…' : '↻ Refresh'}</button>
       </div>
 
       <div className="screenbody">
@@ -14066,7 +14655,7 @@ function CommandCenter({ go, toast, user, role, onEnter }) {
               actions={
                 <span className="segbar">
                   {CC_SERIES.map(([key, label]) => (
-                    <button key={key} className={view === key ? 'on' : ''}
+                    <button key={key} className={'seg' + (view === key ? ' on' : '')}
                       onClick={(e) => { e.stopPropagation(); setView(key) }}>{label}</button>
                   ))}
                 </span>}>
@@ -14338,14 +14927,20 @@ function CommandCenter({ go, toast, user, role, onEnter }) {
 function AuditTrail({ go }) {
   const [rows, setRows] = useState([])
   const [meta, setMeta] = useState({ people: [], modules: [] })
-  const [f, setF] = useState({ user: '', screen: '', outcome: '', date_from: '', date_to: '', q: '' })
+  const NO_TRAIL_FILTERS = { user: '', screen: '', outcome: '', date_from: '', date_to: '' }
+  const [f, setF] = useState(NO_TRAIL_FILTERS)
+  const [q, setQ] = useState('')
+  // the search asks the server once per pause, not once per keystroke
+  const qd = useDebounced(q)
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const active = countActive(f)
   const [more, setMore] = useState(null)
   const [busy, setBusy] = useState(true)
   const [err, setErr] = useState('')
 
   const load = useCallback((before) => {
     setBusy(true)
-    return api.auditEvents({ ...f, limit: 100, before })
+    return api.auditEvents({ ...f, q: qd, limit: 100, before })
       .then((r) => {
         setRows((old) => (before ? [...old, ...r.events] : r.events))
         setMore(r.next_before)
@@ -14356,7 +14951,7 @@ function AuditTrail({ go }) {
         ? 'The server was started before the audit trail existed — restart it.'
         : (e.detail || 'The trail could not be read')))
       .finally(() => setBusy(false))
-  }, [f])
+  }, [f, qd])
   useEffect(() => { load() }, [load])
 
   const set = (k, v) => setF((old) => ({ ...old, [k]: v }))
@@ -14365,32 +14960,39 @@ function AuditTrail({ go }) {
       <div className="pagehead">
         <h2>📝 Audit Trail</h2>
         <div className="pagesub">Every change, who made it and where — newest first</div>
-        <select className="sel" value={f.user} onChange={(e) => set('user', e.target.value)}
-          title="One person's actions" style={{ minWidth: 140 }}>
-          <option value="">Everyone</option>
-          {meta.people.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
-        <select className="sel" value={f.screen} onChange={(e) => set('screen', e.target.value)}
-          title="One module" style={{ minWidth: 150 }}>
-          <option value="">Every module</option>
-          {meta.modules.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
-        </select>
-        <select className="sel" value={f.outcome} onChange={(e) => set('outcome', e.target.value)}
-          title="Refused attempts only">
-          <option value="">Done and refused</option>
-          <option value="ok">Done</option>
-          <option value="refused">Refused</option>
-          <option value="failed">Failed sign-ins</option>
-        </select>
-        <input type="date" value={f.date_from} style={{ width: 140 }}
-          title="From this business day" onChange={(e) => set('date_from', e.target.value)} />
-        <input type="date" value={f.date_to} style={{ width: 140 }}
-          title="To this business day" onChange={(e) => set('date_to', e.target.value)} />
-        <input value={f.q} placeholder="Search the trail…" style={{ width: 180 }}
-          onChange={(e) => set('q', e.target.value)} />
       </div>
 
       <div className="screenbody">
+        {/* The same search · ⛭ Filters pair every list carries, in place of six
+            loose controls in the header with no count and no way to clear them. */}
+        <div className="toolbar" style={{ paddingTop: 0 }}>
+          <SearchBox value={q} onChange={setQ} placeholder="Search the trail…" />
+          <FilterButton open={filtersOpen} onToggle={() => setFiltersOpen((o) => !o)} active={active} />
+        </div>
+        <FilterPanel open={filtersOpen} active={active} onClear={() => setF(NO_TRAIL_FILTERS)}>
+          <FilterField label="Who" title="One person's actions">
+            <select value={f.user} onChange={(e) => set('user', e.target.value)}>
+              <option value="">Everyone</option>
+              {meta.people.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </FilterField>
+          <FilterField label="Module" title="One module">
+            <select value={f.screen} onChange={(e) => set('screen', e.target.value)}>
+              <option value="">Every module</option>
+              {meta.modules.map((m) => <option key={m.key} value={m.key}>{m.label}</option>)}
+            </select>
+          </FilterField>
+          <FilterField label="Outcome" title="Whether it was done, refused, or a failed sign-in">
+            <select value={f.outcome} onChange={(e) => set('outcome', e.target.value)}>
+              <option value="">Done and refused</option>
+              <option value="ok">Done</option>
+              <option value="refused">Refused</option>
+              <option value="failed">Failed sign-ins</option>
+            </select>
+          </FilterField>
+          <DateField label="From" value={f.date_from} onChange={(v) => set('date_from', v)} />
+          <DateField label="To" value={f.date_to} onChange={(v) => set('date_to', v)} />
+        </FilterPanel>
         {err && <div className="warnbox" style={{ marginBottom: 12 }}>
           <div className="small">{err}</div></div>}
         <div className="section">
@@ -14509,7 +15111,7 @@ function CentralDashboard({ toast, go, onEnter }) {
       <div className="pagehead">
         <h2>Central Dashboard</h2>
         <div className="pagesub">Every warehouse at once — stock, value, stores, POS sales and what moved</div>
-        <select value={scope || ''} style={{ minWidth: 200 }}
+        <select className="sel" value={scope || ''} style={{ minWidth: 200 }}
           onChange={(e) => setScope(e.target.value ? +e.target.value : null)}
           title="Scope the tiles and the chart to one warehouse">
           <option value="">All warehouses</option>
@@ -14517,7 +15119,7 @@ function CentralDashboard({ toast, go, onEnter }) {
             <option key={w.warehouse_id} value={w.warehouse_id}>{w.name}</option>
           ))}
         </select>
-        <select value={days} style={{ minWidth: 120 }}
+        <select className="sel" value={days} style={{ minWidth: 120 }}
           onChange={(e) => setDays(+e.target.value)}
           title="How far back the movement chart looks">
           <option value={7}>Last 7 days</option>
@@ -14525,7 +15127,7 @@ function CentralDashboard({ toast, go, onEnter }) {
           <option value={30}>Last 30 days</option>
           <option value={90}>Last 90 days</option>
         </select>
-        <button className="btn" onClick={load}>Refresh</button>
+        <button className="btn" onClick={load}>↻ Refresh</button>
       </div>
 
       <div className="screenbody">
@@ -15046,10 +15648,16 @@ function Catalogues({ toast }) {
   const [detail, setDetail] = useState(null)
   const [err, setErr] = useState(null)
   const [creating, setCreating] = useState(false)
+  useEscape(() => setCreating(false), creating)
   const [nf, setNf] = useState({ code: '', name: '', description: '' })
   const [newAttr, setNewAttr] = useState('')
   const [newCat, setNewCat] = useState('')
   const [openAttr, setOpenAttr] = useState(null)
+  // a trade's category master runs to hundreds — searched and paged, not all at once
+  const [catQ, setCatQ] = useState('')
+  const catsShown = (detail?.categories || [])
+    .filter((c) => !catQ.trim() || String(c.name || '').toLowerCase().includes(catQ.trim().toLowerCase()))
+  const catPage = usePaged(catsShown, 200)
 
   const load = useCallback(() => api.listCatalogues()
     .then((r) => {
@@ -15311,12 +15919,21 @@ function Catalogues({ toast }) {
                 catalogue has none offers none — which is the prompt to build it,
                 not a reason to file its goods under another trade’s list.
               </div>
+              {(detail.categories || []).length > 10 && (
+                <div className="toolbar" style={{ paddingTop: 0 }}>
+                  <SearchBox value={catQ} onChange={setCatQ} placeholder="Search categories…" />
+                  {catQ && <span className="small">{catsShown.length} of {detail.categories.length}</span>}
+                </div>
+              )}
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
                 {!(detail.categories || []).length && (
                   <span className="small" style={{ color: 'var(--text-2)' }}>
                     Nothing yet — add this trade’s categories below.</span>
                 )}
-                {(detail.categories || []).map((c) => (
+                {(detail.categories || []).length > 0 && !catsShown.length && (
+                  <span className="small" style={{ color: 'var(--text-2)' }}>Nothing matches. Clear the search.</span>
+                )}
+                {catPage.slice.map((c) => (
                   <span key={c.id} className="badge" style={{ display: 'inline-flex', gap: 6 }}>
                     {c.name}
                     <button className="link" title="Remove from this master"
@@ -15325,6 +15942,7 @@ function Catalogues({ toast }) {
                   </span>
                 ))}
               </div>
+              <Pager {...catPage} noun="category" nouns="categories" />
               <div style={{ display: 'flex', gap: 6 }}>
                 <input value={newCat} placeholder="e.g. SILK-SAREE — or paste several, comma separated"
                   style={{ flex: 1 }} onChange={(e) => setNewCat(e.target.value)}
@@ -15376,7 +15994,7 @@ function Catalogues({ toast }) {
         <div className="modal-back" onClick={() => setCreating(false)}>
           <div className="modal" style={{ width: 'min(520px, 100%)' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-head"><b>New catalogue</b>
-              <button className="modal-x" onClick={() => setCreating(false)}>×</button></div>
+              <CloseX onClick={() => setCreating(false)} what="the new catalogue" /></div>
             <div className="modal-body">
               <div className="mgrid">
                 <div className="field"><label>Code</label>
@@ -16561,7 +17179,7 @@ function Dashboard({ modules, go, company, docs, refreshDocs, user, openDeadStoc
             title="The same warehouse as trends and shares over time">📈 Charts</button>
         </div>
         <button className="btn" onClick={() => { refreshDocs(); load() }} disabled={busy}
-          title="Re-read every figure on this screen">{busy ? 'Refreshing…' : '↻ Refresh'}</button>
+          title="Re-read every figure on this screen">{busy ? 'Reading…' : '↻ Refresh'}</button>
       </div>
 
       <div className="dash">
@@ -16829,6 +17447,18 @@ export default function App() {
     try { localStorage.setItem('essa_open_tabs', JSON.stringify(next)) }
     catch { /* private mode */ }
   }
+  // ------------------------------------------------------------------------
+  //  ← Back, across screens
+  //  ----------------------------------------------------------------------
+  //  The screens somebody moved through, newest last, so the Back at the head
+  //  of the context bar returns to the one before — a GRN opened from Invoice
+  //  Entry goes back to Invoice Entry, not to wherever the menu happens to be.
+  //  Only moves somebody MADE are recorded (`navigate`); the shell correcting a
+  //  stale tab (the effects below) calls setTab directly and records nothing,
+  //  or Back would walk into a screen that immediately redirects away again.
+  //  Emptied on a warehouse switch: the screen before it belonged to the
+  //  building you left, and going "back" there would change warehouse too.
+  const [trail, setTrail] = useState([])
   const setTab = (t) => {
     setTabState(t)
     try { localStorage.setItem('essa_tab', t) } catch { /* private mode */ }
@@ -16837,6 +17467,20 @@ export default function App() {
     // jobs must not push either of them out or grow the strip with something
     // nobody will return to.
     if (keepAlive(t) && !openTabs.includes(t)) rememberOpen([...openTabs, t])
+  }
+  // A move somebody made: remembered, so Back can undo it.
+  const navigate = (t) => {
+    if (t === tab) return
+    setTrail((h) => [...h.filter((x) => x !== t), tab].slice(-30))
+    setTab(t)
+  }
+  // Back to the last screen still open to this account here; with none, to the
+  // home screen of where you are standing. Reads `backTrail` and `backTo`,
+  // declared further down — safe, because this only ever runs on a click.
+  const goBack = () => {
+    if (!backTo) return
+    setTrail(backTrail.slice(0, -1))
+    setTab(backTo)
   }
   // `alive` — which tabs are mounted right now — is computed BELOW, beside
   // `modules`: deciding it needs the role and the grant map, and reading a
@@ -16873,7 +17517,7 @@ export default function App() {
     warehouse.set(w && { id: w.id || w.warehouse_id, name: w.name,
                          code: w.code, catalogue: w.catalogue })
     setHere(warehouse.get())
-    setSel(null); setSelPurchase(null)
+    setSel(null); setSelPurchase(null); setTrail([])
     // Entering lands on the workspace that was asked for — the store's own
     // dashboard when somebody chose Store before they chose a building.
     // Leaving lands on whichever company screen this account can actually have:
@@ -16905,13 +17549,20 @@ export default function App() {
   // Which Dead Stock screen a dashboard card asked for. Held here because the
   // card and the module are siblings — see the useEffect in DeadStock.
   const [dsIntent, setDsIntent] = useState(null)
-  const openDeadStock = (intent) => { setDsIntent(intent || null); setTab('deadstock') }
+  const openDeadStock = (intent) => { setDsIntent(intent || null); navigate('deadstock') }
   const [scanning, setScanning] = useState(null)   // {url, name} while extracting
   const [docQuery, setDocQuery] = useState('')
   const [docScope, setDocScope] = useState('all')
-  // scope chip + search, applied together — the same pairing every list uses
+  // ⛭ Filters on the invoice queue: who sent it, when it came in, how it was
+  // entered, how sure the reading is, and what it is worth.
+  const [docFiltersOpen, setDocFiltersOpen] = useState(false)
+  const [docF, setDocF] = useState(NO_DOC_FILTERS)
+  const setDocField = (k) => (e) => setDocF((x) => ({ ...x, [k]: e && e.target ? e.target.value : e }))
+  const docActive = countActive(docF)
+  // scope chip + search + filters, applied together — the same trio every list uses
   const shownDocs = docs
     .filter((d) => docScope === 'all' || d.status === docScope)
+    .filter((d) => docMatchesFilters(d, docF))
     .filter((d) => matches(d, docQuery, ['supplier_name', 'filename', 'invoice_number', 'status']))
   const docPage = usePaged(shownDocs, 50)
   const [authed, setAuthed] = useState(false)
@@ -16946,6 +17597,10 @@ export default function App() {
   // The warehouse and the open tab are remembered separately and can come back
   // contradicting each other, so the tab is corrected, not just the menu.
   useEffect(() => {
+    // Not before the role is known. Until the token is verified `role` is '',
+    // every admin check below reads "no", and a reload on Audit Trail, Users or
+    // Locations was bounced to the warehouse picker before the answer came back.
+    if (!authed || !role) return
     if (here && COMPANY_ONLY.has(tab)) { setTab('dashboard'); return }
     if (!here && tab !== 'pickwh' && !COMPANY_LEVEL.has(tab)) setTab(homeTab)
     if (!here && tab === 'central' && !canCentral) setTab('pickwh')
@@ -16956,7 +17611,7 @@ export default function App() {
     // A remembered Store tab this account is no longer given — the last person
     // at this terminal was an admin, or the access was narrowed since.
     if (here && storeUser && String(tab).startsWith('pos:') && !POS_USER_KEYS.has(tab)) setTab(storeHome)
-  }, [here, tab, canCentral, canCommand, homeTab, storeUser, storeHome])
+  }, [authed, role, here, tab, canCentral, canCommand, homeTab, storeUser, storeHome])
 
   // The stores this warehouse supplies, so the menu can call them by the names
   // somebody gave them. Re-read when the warehouse changes — a store belongs to
@@ -17013,15 +17668,15 @@ export default function App() {
     // cookie outlives the logout, and the invoice images on a shared terminal
     // stay fetchable by the next person to open the tab.
     api.logout()
-    session.clear(); resetCache(); setAuthed(false); setSel(null); setTab('dashboard')
+    session.clear(); resetCache(); setAuthed(false); setSel(null); setTab('dashboard'); setTrail([])
   }
-  const gotoPurchase = (id) => { setSelPurchase(id); setTab('purchases') }
+  const gotoPurchase = (id) => { setSelPurchase(id); navigate('purchases') }
 
   // The way in for a bill that never was a photograph. It creates the document
   // and selects it, which drops straight into the same review form an upload
   // lands on — with every field blank rather than extracted.
   const onNewEntry = async () => {
-    setTab('documents')
+    navigate('documents')
     try {
       const res = await api.createManualDocument()
       await refresh()
@@ -17047,7 +17702,7 @@ export default function App() {
     // show the first page being "scanned" while the backend extracts
     const url = file.type.startsWith('image/') ? URL.createObjectURL(file) : null
     setScanning({ url, name: files.length > 1 ? `${files.length} pages` : file.name })
-    setTab('documents')
+    navigate('documents')
     try {
       const res = await api.upload(files)
       await refresh()
@@ -17254,11 +17909,11 @@ export default function App() {
       if (here) enterWarehouse(null); else setTab(homeTab)
       return
     }
-    if (here) { setTab(target === 'store' ? storeHome : 'dashboard'); return }
+    if (here) { navigate(target === 'store' ? storeHome : 'dashboard'); return }
     // A building has to be chosen first. With only one to choose from, choosing
     // it for them is not a decision taken away — it is a click saved.
     if (whList.length === 1) { enterWarehouse(whList[0], target === 'store' ? storeHome : 'dashboard'); return }
-    setPickFor(target); setTab('pickwh')
+    setPickFor(target); navigate('pickwh')
   }
   const pickWarehouse = (id) => {
     const w = whList.find((x) => String(x.id) === String(id))
@@ -17296,8 +17951,27 @@ export default function App() {
   ]
   const jumpTo = (k) => {
     setJumpOpen(false)
-    if (String(k).startsWith('ws:')) goWs(k.slice(3)); else setTab(k)
+    if (String(k).startsWith('ws:')) goWs(k.slice(3)); else navigate(k)
   }
+
+  // Where ← Back goes from here: the last screen visited that this account can
+  // still open where it is standing, else this altitude's home screen. Nothing
+  // on the home screen itself with nowhere visited — there is no "back" from it.
+  const homeHere = here ? (ws === 'store' ? storeHome : 'dashboard') : homeTab
+  const backTrail = trail.filter((k) => k !== tab
+    && (k === 'dashboard' ? !!here : k === 'pickwh' ? !here : availableHere(k)))
+  const backTo = backTrail.length ? backTrail[backTrail.length - 1]
+    : tab !== homeHere ? homeHere : null
+  // Alt+← does the same, and is kept from the browser, where it would leave the app.
+  const goBackRef = useRef(goBack)
+  goBackRef.current = goBack
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); goBackRef.current() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   if (!authChecked) return <div className="login-wrap"><div className="login-bg" /></div>
   if (!authed) return <LoginScreen onLogin={handleLogin} />
@@ -17359,6 +18033,13 @@ export default function App() {
           warehouse they are inside will post a receipt into the wrong building. */}
       <div className="ctxbar">
         <div className="ctx-left">
+          {backTo && (
+            <button className="ctx-back" onClick={goBack}
+              title={`Back to ${labelFor(backTo)} (Alt + ←)`} aria-label={`Back to ${labelFor(backTo)}`}>
+              <span aria-hidden="true">←</span> Back
+              <span className="to">· {labelFor(backTo)}</span>
+            </button>
+          )}
           <div className="wsseg" role="tablist" aria-label="Workspace">
             <button role="tab" aria-selected={wsShown === 'central'} className={wsShown === 'central' ? 'on' : ''}
               onClick={() => goWs('central')}
@@ -17443,12 +18124,12 @@ export default function App() {
       </div>
 
       {/* 3. The open tabs. */}
-      <TabStrip open={alive} active={tab} setTab={setTab} close={closeTab}
+      <TabStrip open={alive} active={tab} setTab={navigate} close={closeTab}
         label={labelFor} />
 
       {/* 4. The sidebar beside the open screen. */}
       <div className="shell">
-      <NavSidebar kind={navKind} context={navContext} items={navItems} tab={tab} go={setTab}
+      <NavSidebar kind={navKind} context={navContext} items={navItems} tab={tab} go={navigate}
         online={!!status} foot={navFoot} />
       <main className="shellmain">
       {/* Keyed on the warehouse. Switching one remounts every screen below, so
@@ -17495,7 +18176,7 @@ export default function App() {
       </div>
 
       {navOpen && <NavSidebar drawer kind={navKind} context={navContext} items={navItems}
-        tab={tab} go={setTab} online={!!status} foot={navFoot}
+        tab={tab} go={navigate} online={!!status} foot={navFoot}
         onClose={() => setNavOpen(false)} />}
       {jumpOpen && <JumpPalette groups={jumpGroups} onGo={jumpTo}
         onClose={() => setJumpOpen(false)} />}
@@ -17504,7 +18185,7 @@ export default function App() {
       {/* At the app root, not in the header the bell sits in: everything under
           .topbar is styled for the dark chrome, and a light panel mounted there
           inherits white button text on a white card. */}
-      {notifsOpen && <NotificationPanel go={setTab} user={user} toast={toast}
+      {notifsOpen && <NotificationPanel go={navigate} user={user} toast={toast}
         onClose={() => setNotifsOpen(false)}
         onChanged={() => setNotifTick((t) => t + 1)} />}
       {showSettings && <VisionSettings onClose={() => setShowSettings(false)}
@@ -17534,7 +18215,7 @@ export default function App() {
     if (String(k).startsWith('pos:')) return null
     return (
       k === 'dashboard' ? (
-        <Dashboard modules={modules} go={setTab} company={status?.company?.name}
+        <Dashboard modules={modules} go={navigate} company={status?.company?.name}
           docs={docs} refreshDocs={refresh} user={user} openDeadStock={openDeadStock}
           here={here} />
       ) : k === 'purchase_orders' ? (
@@ -17544,32 +18225,73 @@ export default function App() {
       ) : k === 'documents' ? (
         <div className="body">
           <Sidebar id="documents" label="Documents">
-            <div className="head"><h3>Documents · {docs.length}</h3>
+            <div className="head">
+              <h3>Documents · {shownDocs.length === docs.length ? docs.length : `${shownDocs.length} of ${docs.length}`}</h3>
               {/* Back to the saved-invoice search — every GRN invoice, not only
                   the documents listed here. */}
               <button className="btn" style={{ padding: '3px 9px', fontSize: 11 }}
-                onClick={() => setSel(null)} title="Search every saved invoice by number, supplier or GRN">🔍 Find invoice</button>
+                onClick={() => setSel(null)} title="Search every saved invoice by number, supplier or GRN">⌕ Find invoice</button>
               {/* Emptying every transaction table is irreversible and global,
                   so it is a super admin's button even though this screen is
-                  the floor's. The server refuses it for anyone else too. */}
-              {docs.length > 0 && isSuper && <button className="btn" style={{ padding: '3px 9px', fontSize: 11 }}
-                onClick={clearAll} title="Delete all documents & transaction data">Clear all</button>}</div>
+                  the floor's. The server refuses it for anyone else too.
+                  NOT called "Clear all": that is what the filter panel's reset
+                  says one row below, and the two must never be mistaken. */}
+              {docs.length > 0 && isSuper && <button className="btn danger" style={{ padding: '3px 9px', fontSize: 11 }}
+                onClick={clearAll} title="Delete ALL documents and transaction data — cannot be undone">Wipe data…</button>}</div>
             {docs.length > 0 && <>
               <SearchBox value={docQuery} onChange={setDocQuery}
                 placeholder="Search supplier, invoice, status…" />
-              <div className="toolbar"><FilterChips value={docScope} onChange={setDocScope} options={[
-                ['needs_review', 'To review', docs.filter((d) => d.status === 'needs_review').length, 'Read, but something did not reconcile'],
-                ['confirmed', 'Confirmed', docs.filter((d) => d.status === 'confirmed').length, 'Corrected and saved'],
-                ['posted', 'Posted', docs.filter((d) => d.status === 'posted').length, 'Already booked into stock'],
-                ['all', 'All', docs.length, 'Every document'],
-              ]} /></div>
+              <div className="toolbar">
+                <FilterChips value={docScope} onChange={setDocScope} options={[
+                  ['needs_review', 'To review', docs.filter((d) => d.status === 'needs_review').length, 'Read, but something did not reconcile'],
+                  ['confirmed', 'Confirmed', docs.filter((d) => d.status === 'confirmed').length, 'Corrected and saved'],
+                  ['posted', 'Posted', docs.filter((d) => d.status === 'posted').length, 'Already booked into stock'],
+                  ['all', 'All', docs.length, 'Every document'],
+                ]} />
+                <FilterButton open={docFiltersOpen} onToggle={() => setDocFiltersOpen((o) => !o)} active={docActive} />
+              </div>
+              <FilterPanel open={docFiltersOpen} active={docActive} onClear={() => setDocF(NO_DOC_FILTERS)}>
+                <FilterField label="Supplier">
+                  <select value={docF.supplier} onChange={setDocField('supplier')}>
+                    <option value="">Any supplier</option>
+                    {[...new Set(docs.map((d) => d.supplier_name).filter(Boolean))]
+                      .sort((a, b) => a.localeCompare(b))
+                      .map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </FilterField>
+                <DateField label="Uploaded from" value={docF.from} onChange={setDocField('from')} />
+                <DateField label="Uploaded to" value={docF.to} onChange={setDocField('to')} />
+                <FilterField label="Entered by">
+                  <select value={docF.entry} onChange={setDocField('entry')}>
+                    <option value="">Scanned or typed</option>
+                    <option value="scanned">Scanned / photographed</option>
+                    <option value="typed">Keyed in by hand</option>
+                  </select>
+                </FilterField>
+                <FilterField label="Reading confidence" title="How sure the extraction is of what it read">
+                  <select value={docF.confidence} onChange={setDocField('confidence')}>
+                    <option value="">Any</option>
+                    <option value="hi">High (90% and over)</option>
+                    <option value="mid">Medium (60–89%)</option>
+                    <option value="lo">Low (under 60%)</option>
+                  </select>
+                </FilterField>
+                <FilterField label="Amount from (₹)">
+                  <input value={docF.min_total} inputMode="decimal" placeholder="0"
+                    onChange={setDocField('min_total')} />
+                </FilterField>
+                <FilterField label="Amount to (₹)">
+                  <input value={docF.max_total} inputMode="decimal" placeholder="any"
+                    onChange={setDocField('max_total')} />
+                </FilterField>
+              </FilterPanel>
             </>}
             <div className="list">
               {docs.length === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
                 No documents. Click “Upload invoice” to read one from a scan,
                 or “New entry” to key one in by hand.</div>}
               {docs.length > 0 && shownDocs.length === 0 && <div className="empty" style={{ marginTop: 30, fontSize: 13 }}>
-                Nothing matches. Try “All” or clear the search.</div>}
+                Nothing matches. Try “All”, clear the search{docActive ? ' or clear the filters' : ''}.</div>}
               {docPage.slice.map((d) => (
                 <div key={d.id} className={'doc-row' + (sel === d.id ? ' sel' : '')} onClick={() => setSel(d.id)}>
                   <div className="t" style={{ display: 'flex', alignItems: 'center' }}>
@@ -17592,7 +18314,8 @@ export default function App() {
             <Pager {...docPage} noun="document" />
           </Sidebar>
           {/* nothing picked: the saved-invoice search, not an empty pane */}
-          {sel ? <Review docId={sel} onSaved={refresh} onCreateGrn={gotoPurchase} toast={toast} />
+          {sel ? <Review docId={sel} onSaved={refresh} onCreateGrn={gotoPurchase} toast={toast}
+                    onBack={() => setSel(null)} />
             : <InvoiceFinder onOpenGrn={gotoPurchase} />}
         </div>
       ) : k === 'purchases' ? (
@@ -17600,7 +18323,7 @@ export default function App() {
       ) : k === 'inventory' ? (
         <Inventory toast={toast} />
       ) : k === 'deadstock' ? (
-        <DeadStock toast={toast} go={setTab} intent={dsIntent}
+        <DeadStock toast={toast} go={navigate} intent={dsIntent}
           onIntentUsed={() => setDsIntent(null)} />
       ) : k === 'labels' ? (
         <LabelDesigner toast={toast} role={role} />
@@ -17634,12 +18357,12 @@ export default function App() {
       ) : k === 'pickwh' ? (
         <ChooseWarehouse onEnter={enterWarehouse} user={user} />
       ) : k === 'command' ? (
-        <CommandCenter go={setTab} toast={toast} user={user} role={role}
+        <CommandCenter go={navigate} toast={toast} user={user} role={role}
           onEnter={enterWarehouse} />
       ) : k === 'audit' ? (
-        <AuditTrail go={setTab} />
+        <AuditTrail go={navigate} />
       ) : k === 'central' ? (
-        <CentralDashboard toast={toast} go={setTab} onEnter={enterWarehouse} />
+        <CentralDashboard toast={toast} go={navigate} onEnter={enterWarehouse} />
       ) : k === 'catalogues' ? (
         <Catalogues toast={toast} />
       ) : k === 'locations' ? (
@@ -17651,7 +18374,7 @@ export default function App() {
       ) : (
         // an unknown saved tab (a module renamed since it was stored) lands on
         // the dashboard rather than on a blank screen
-        <Dashboard modules={modules} go={setTab} company={status?.company?.name}
+        <Dashboard modules={modules} go={navigate} company={status?.company?.name}
           docs={docs} refreshDocs={refresh} user={user} openDeadStock={openDeadStock}
           here={here} />
       )

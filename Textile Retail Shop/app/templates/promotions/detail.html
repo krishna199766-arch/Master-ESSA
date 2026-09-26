@@ -1,8 +1,10 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 {% set state = scheme.status(today) %}
 <div class="page-head align-items-start">
   <div>
+    {{ ui.back(url_for('promotions.index'), 'All schemes') }}
     <h4 class="mb-1"><i class="bi bi-gift"></i> {{ scheme.name }}
       <span class="badge text-bg-{{ {'active':'success','scheduled':'warning',
                                      'expired':'secondary','inactive':'secondary'}[state] }}">
@@ -23,7 +25,6 @@
       <button class="btn btn-outline-danger btn-sm"><i class="bi bi-trash"></i></button>
     </form>
     {% endif %}
-    <a href="{{ url_for('promotions.index') }}" class="btn btn-outline-secondary btn-sm">All schemes</a>
   </div>
 </div>
 

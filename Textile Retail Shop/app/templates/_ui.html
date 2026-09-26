@@ -1,0 +1,56 @@
+{#
+  Shared page furniture. Imported where it is used:
+      {% import "_ui.html" as ui %}
+
+  ONE way back, worded and drawn the same on every screen. Inside the Essa frame
+  the shop's own menu is hidden, so a page with no way back is a dead end — the
+  only exits left are the Essa sidebar and the browser's Back button.
+
+  back(url, label)       a "← label" link set ABOVE the page title (the pattern
+                         the Reports pages started). For ordinary pages.
+  back_btn(url, label)   the same, as the first button of a print / document
+                         toolbar, where there is no page title to sit above.
+
+  smart=True             for a page reached from several places (a bill opened
+                         from the counter, from Invoices, from a customer…):
+                         returns to the page you came from when that was a page
+                         of this shop, and to `url` otherwise — a link opened in
+                         a new tab, a bookmark, a reload.
+#}
+{% macro back(url, label='Back', smart=False) -%}
+<a href="{{ url }}" class="page-back d-print-none no-print{% if smart %} js-back{% endif %}"
+   title="{{ label }}"><i class="bi bi-arrow-left"></i> {{ label }}</a>
+{%- endmacro %}
+
+{% macro back_btn(url, label='Back', smart=False) -%}
+<a href="{{ url }}" class="btn btn-outline-secondary btn-sm d-print-none no-print{% if smart %} js-back{% endif %}"
+   title="{{ label }}"><i class="bi bi-arrow-left"></i> {{ label }}</a>
+{%- endmacro %}
+
+{#
+  The end of every list screen's filter form: Filter, and — once anything is
+  set — Clear, which drops every filter at once. `active` is true when the page
+  was asked for with any filter, so a filtered list always says so.
+#}
+{% macro filter_actions(active, clear_url) -%}
+<div class="col-md-auto d-flex gap-2">
+  <button class="btn btn-brand btn-sm"><i class="bi bi-funnel"></i> Filter</button>
+  {% if active %}<a href="{{ clear_url }}" class="btn btn-outline-secondary btn-sm"
+     title="Remove every filter">Clear</a>{% endif %}
+</div>
+{%- endmacro %}
+
+{#
+  The quick search beside a list's status chips — one box, one button, and a
+  Clear once something has been searched. `keep` carries the other filters
+  (the chip in use) through the search, so searching never resets them.
+#}
+{% macro search(q, placeholder, clear_url, keep={}) -%}
+<form class="ms-auto d-flex gap-2 list-search" method="get" role="search">
+  {% for k, v in keep.items() %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+  <input class="form-control form-control-sm" name="q" value="{{ q or '' }}"
+         placeholder="{{ placeholder }}" aria-label="{{ placeholder }}">
+  <button class="btn btn-outline-primary btn-sm"><i class="bi bi-search"></i> Search</button>
+  {% if q %}<a href="{{ clear_url }}" class="btn btn-outline-secondary btn-sm" title="Clear the search">Clear</a>{% endif %}
+</form>
+{%- endmacro %}

@@ -1,9 +1,11 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
-  <h4 class="mb-0"><i class="bi bi-list-ol"></i> Bill series</h4>
-  <a href="{{ url_for('stores.index') }}" class="btn btn-outline-secondary btn-sm">
-    <i class="bi bi-arrow-left"></i> Floors &amp; tills</a>
+  <div>
+    {{ ui.back(url_for('stores.index'), 'Floors & tills') }}
+    <h4 class="mb-0"><i class="bi bi-list-ol"></i> Bill series</h4>
+  </div>
 </div>
 
 <p class="text-muted small">

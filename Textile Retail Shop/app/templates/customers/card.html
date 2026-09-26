@@ -1,11 +1,14 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Card — {{ customer.name }}{% endblock %}
 {% block content %}
 <div class="page-head d-print-none">
-  <h4><i class="bi bi-person-vcard"></i> Membership card</h4>
+  <div>
+    {{ ui.back(url_for('customers.view_customer', cid=customer.id), customer.name, smart=True) }}
+    <h4><i class="bi bi-person-vcard"></i> Membership card</h4>
+  </div>
   <div>
     <button onclick="window.print()" class="btn btn-brand btn-sm"><i class="bi bi-printer"></i> Print card</button>
-    <a href="{{ url_for('customers.view_customer', cid=customer.id) }}" class="btn btn-outline-secondary btn-sm">Back</a>
   </div>
 </div>
 

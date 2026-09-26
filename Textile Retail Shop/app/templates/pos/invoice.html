@@ -1,7 +1,8 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="no-print mb-3 d-flex flex-wrap gap-2 align-items-start">
-  <a href="{{ url_for('pos.counter') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-left"></i> Back</a>
+  {{ ui.back_btn(url_for('pos.counter'), 'Back', smart=True) }}
   <button class="btn btn-brand btn-sm" onclick="window.print()"><i class="bi bi-printer"></i> Print</button>
   {# Cancelling is for a bill rung up wrongly today, before anything else has hung
      off it — app/cancellation.py says what counts. When it cannot be cancelled the

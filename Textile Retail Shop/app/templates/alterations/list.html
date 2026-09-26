@@ -1,16 +1,21 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
-  <h4><i class="bi bi-scissors"></i> Alteration jobs</h4>
-  <a href="{{ url_for('alterations.index') }}" class="btn btn-brand btn-sm">+ New</a>
+  <div>
+    {{ ui.back(url_for('alterations.index'), 'Alterations') }}
+    <h4><i class="bi bi-scissors"></i> Alteration jobs</h4>
+  </div>
+  <a href="{{ url_for('alterations.index') }}" class="btn btn-brand btn-sm"><i class="bi bi-plus"></i> New</a>
 </div>
 
-<div class="mb-3">
+<div class="d-flex gap-2 flex-wrap mb-3">
   {% for key, label in [('open','Open'), ('overdue','Overdue'), ('pending','At tailor'),
                         ('ready','Ready'), ('delivered','Delivered'), ('all','All')] %}
-  <a href="{{ url_for('alterations.list_jobs', status=key) }}"
+  <a href="{{ url_for('alterations.list_jobs', status=key, q=q) }}"
      class="btn btn-sm {% if status == key %}btn-brand{% else %}btn-outline-secondary{% endif %}">{{ label }}</a>
   {% endfor %}
+  {{ ui.search(q, 'Search job no, bill no, customer…', url_for('alterations.list_jobs', status=status), keep={'status': status}) }}
 </div>
 
 <div class="card">

@@ -1,7 +1,11 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
-  <h4><i class="bi bi-exclamation-triangle text-warning"></i> Low stock report</h4>
+  <div>
+    {{ ui.back(url_for('reports.index'), 'Store Reports', smart=True) }}
+    <h4><i class="bi bi-exclamation-triangle text-warning"></i> Low stock report</h4>
+  </div>
 </div>
 {% if capped %}
 <div class="text-muted small mb-2">{{ '{:,}'.format(total) }} products are at or below their reorder level — the {{ items|length }} emptiest are shown. Setting reorder levels on the lines that matter narrows this to the ones worth acting on.</div>

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
   <h4><i class="bi bi-box-seam"></i> Inventory</h4>
@@ -15,10 +16,12 @@
   </div>
 </div>
 
-<form class="row g-2 mb-3">
-  <div class="col-md-5"><input class="form-control" name="q" placeholder="Search name, SKU, fabric, color" value="{{ q }}"></div>
-  <div class="col-md-3">
-    <select class="form-select" name="category">
+<form class="card p-3 mb-3" method="get">
+  <div class="row g-2 align-items-end">
+  <div class="col-md-5"><label class="form-label small mb-1">Search</label>
+    <input class="form-control form-control-sm" name="q" placeholder="Search name, SKU, fabric, colour…" value="{{ q }}"></div>
+  <div class="col-md-3"><label class="form-label small mb-1">Category</label>
+    <select class="form-select form-select-sm" name="category">
       <option value="">All categories</option>
       {% for section, cats in category_groups %}
       <optgroup label="{{ section }}">
@@ -29,7 +32,8 @@
       {% endfor %}
     </select>
   </div>
-  <div class="col-md-2"><button class="btn btn-outline-primary w-100">Filter</button></div>
+  {{ ui.filter_actions(q or cat_id, url_for('inventory.list_products')) }}
+  </div>
 </form>
 {% if capped %}
 <div class="text-muted small mb-2">Showing the first {{ products|length }} of {{ '{:,}'.format(total) }} products{% if q %} matching “{{ q }}”{% endif %} — search or pick a category to find the rest.</div>

@@ -1,7 +1,9 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="page-head">
   <div>
+    {{ ui.back(url_for('staff.list_staff'), 'Staff') }}
     <h4><i class="bi bi-percent"></i> Commissions</h4>
     <div class="page-sub">since {{ month_start.strftime('%d %b %Y') }}</div>
   </div>

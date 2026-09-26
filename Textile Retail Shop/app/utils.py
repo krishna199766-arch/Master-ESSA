@@ -12,6 +12,19 @@ from flask_login import current_user
 from app import db
 
 
+def day_arg(name):
+    """A `?name=YYYY-MM-DD` query argument (what an <input type=date> sends) as a
+    date, or None when it is absent or unreadable — a bad date is no filter, not
+    a 500. Used by every list screen's From / To filters."""
+    from datetime import datetime
+    from flask import request
+    raw = (request.args.get(name) or "").strip()
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
 def role_required(*roles):
     def wrap(fn):
         @wraps(fn)

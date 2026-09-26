@@ -1,8 +1,8 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block content %}
 <div class="no-print mb-3">
-  <a href="{{ url_for('audits.detail', aid=audit.id) }}" class="btn btn-outline-secondary btn-sm">
-    <i class="bi bi-arrow-left"></i> Back</a>
+  {{ ui.back_btn(url_for('audits.detail', aid=audit.id), 'Back to ' + audit.number) }}
   <button class="btn btn-brand btn-sm" onclick="window.print()">
     <i class="bi bi-printer"></i> Print</button>
   <a href="{{ url_for('audits.export', aid=audit.id) }}" class="btn btn-outline-secondary btn-sm">

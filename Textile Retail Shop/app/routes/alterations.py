@@ -21,7 +21,7 @@ from flask import (Blueprint, render_template, request, redirect, url_for,
 from flask_login import login_required, current_user
 
 from app import db
-from app.models import (Alteration, AlterationItem, Invoice, Tailor)
+from app.models import (Alteration, AlterationItem, Customer, Invoice, Tailor)
 from app.routes.pos import resolve_staff
 from app.utils import generate_number, role_required
 
@@ -169,9 +169,18 @@ def list_jobs():
                      Alteration.promised_date < date.today())
     elif status in ("pending", "ready", "delivered"):
         q = q.filter(Alteration.status == status)
+    # job number, bill number or customer — alongside the status chips above
+    term = (request.args.get("q") or "").strip()
+    if term:
+        from sqlalchemy import or_
+        like = f"%{term}%"
+        q = (q.join(Invoice, Alteration.invoice_id == Invoice.id)
+             .outerjoin(Customer, Invoice.customer_id == Customer.id)
+             .filter(or_(Alteration.number.ilike(like), Invoice.invoice_number.ilike(like),
+                         Customer.name.ilike(like), Customer.phone.ilike(like))))
     jobs = q.order_by(Alteration.id.desc()).limit(300).all()
     return render_template("alterations/list.html", jobs=jobs, status=status,
-                           today=date.today())
+                           today=date.today(), q=term)
 
 
 # ---- the tailor list -------------------------------------------------------

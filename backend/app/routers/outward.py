@@ -9,6 +9,7 @@ from ..services import outward as svc
 from ..services import stock_locations as stock_loc
 from ..services import stock_view
 from ..services import scope
+from ..services import dates as date_svc
 
 router = APIRouter(prefix="/api/outward", tags=["stock-outward"])
 
@@ -124,6 +125,7 @@ def _get(oid: int, db: Session):
 @router.get("")
 def list_outwards(status: str = "all", kind: str = "all",
                   limit: Optional[int] = None, offset: int = 0, q: str = "",
+                  date_from: str = "", date_to: str = "",
                   db: Session = Depends(get_db),
                   warehouse_id: Optional[int] = Depends(scope.current)):
     """`status` filters the list: draft | posted | received. 'posted' is what the
@@ -137,7 +139,9 @@ def list_outwards(status: str = "all", kind: str = "all",
     Without `limit`, every matching note as a list. With it, one page:
     `{rows, total, counts}` — `q` searches destination, code and status, `total`
     is how many match, `counts` are per status for the chips (ignoring `status`
-    and `q`, so every chip keeps its number while one is selected)."""
+    and `q`, so every chip keeps its number while one is selected).
+    `date_from` / `date_to` narrow the paged form to the dispatch date,
+    inclusive — dates are stored ISO, so the range is a string comparison."""
     SO = models.StockOutward
     base = db.query(SO)
     if kind == "transfer":
@@ -161,6 +165,15 @@ def list_outwards(status: str = "all", kind: str = "all",
         like = f"%{term}%"
         filtered = filtered.filter(SO.to_destination.ilike(like) | SO.code.ilike(like)
                                    | SO.status.ilike(like))
+    lo, hi = date_svc.to_iso(date_from), date_svc.to_iso(date_to)
+    if lo or hi:
+        # a note with no date is in no date range — and '' sorts before every
+        # date, so without this it would match any "up to" bound
+        filtered = filtered.filter(SO.date.isnot(None), SO.date != "")
+    if lo:
+        filtered = filtered.filter(SO.date >= lo)
+    if hi:
+        filtered = filtered.filter(SO.date <= hi)
     counts = dict(base.with_entities(SO.status, func.count(SO.id)).group_by(SO.status).all())
     counts["all"] = sum(counts.values())
     total = filtered.count()

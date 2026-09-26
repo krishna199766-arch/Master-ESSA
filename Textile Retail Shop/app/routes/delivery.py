@@ -40,7 +40,7 @@ from app import db, places, warehouse_items
 from app.models import (Customer, Delivery, DeliveryBill, DeliveryLine,
                         DeliveryScan, Invoice, InvoiceItem)
 from app.routes.pos import POST_KEYS, resolve_staff
-from app.utils import generate_number
+from app.utils import day_arg, generate_number
 
 delivery_bp = Blueprint("delivery", __name__)
 
@@ -463,12 +463,18 @@ def print_note(did):
 def list_deliveries():
     """Every handover, newest first."""
     q = (request.args.get("q") or "").strip()
+    d_from, d_to = day_arg("from"), day_arg("to")
     query = Delivery.query
     if q:
         like = f"%{q}%"
         query = query.outerjoin(Customer, Delivery.customer_id == Customer.id) \
             .filter(or_(Delivery.number.ilike(like), Customer.name.ilike(like),
                         Customer.phone.ilike(like)))
+    # a date range too — the list stops at 300, so an older handover needs one
+    if d_from:
+        query = query.filter(Delivery.created_at >= datetime.combine(d_from, datetime.min.time()))
+    if d_to:
+        query = query.filter(Delivery.created_at < datetime.combine(d_to, datetime.max.time()))
     # Everything each row prints, read with the rows: its customer, its staff,
     # its bills' numbers and its lines (with the bill line that prices them).
     # Row by row that was several queries per delivery — 14 s for 300 on a store
@@ -478,7 +484,8 @@ def list_deliveries():
                            selectinload(Delivery.bills).joinedload(DeliveryBill.invoice),
                            selectinload(Delivery.lines).joinedload(DeliveryLine.invoice_item))
              .order_by(Delivery.id.desc()).limit(300).all())
-    return render_template("delivery/list.html", notes=notes, q=q)
+    return render_template("delivery/list.html", notes=notes, q=q, d_from=d_from, d_to=d_to,
+                           filtered=bool(q or d_from or d_to))
 
 
 @delivery_bp.route("/pending")

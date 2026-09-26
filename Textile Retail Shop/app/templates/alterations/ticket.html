@@ -1,8 +1,12 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}{{ job.number }} — {{ SHOP_NAME }}{% endblock %}
 {% block content %}
 <div class="page-head d-print-none">
-  <h4><i class="bi bi-scissors"></i> Alteration {{ job.number }}</h4>
+  <div>
+    {{ ui.back(url_for('alterations.list_jobs'), 'Alteration jobs', smart=True) }}
+    <h4><i class="bi bi-scissors"></i> Alteration {{ job.number }}</h4>
+  </div>
   <div>
     <button onclick="window.print()" class="btn btn-brand btn-sm"><i class="bi bi-printer"></i> Print ticket</button>
     <a href="{{ url_for('alterations.index') }}" class="btn btn-outline-secondary btn-sm">New alteration</a>
